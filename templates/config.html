@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block title %}Configuration — MailMatrix AI{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Configuration</h1>
+  <p class="page-subtitle">IMAP and API credentials stored in your .env file</p>
+</div>
+
+<div class="card config-card">
+  <form id="config-form" onsubmit="saveConfig(event)">
+    <div class="form-section-label">IMAP Settings</div>
+
+    <div class="form-row">
+      <div class="form-group">
+        <label for="IMAP_SERVER">IMAP Server</label>
+        <input id="IMAP_SERVER" name="IMAP_SERVER" type="text" value="{{ cfg.IMAP_SERVER }}" placeholder="imap.gmail.com">
+      </div>
+      <div class="form-group form-group-sm">
+        <label for="IMAP_PORT">Port</label>
+        <input id="IMAP_PORT" name="IMAP_PORT" type="number" value="{{ cfg.IMAP_PORT }}" placeholder="993">
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label for="IMAP_USERNAME">Username</label>
+      <input id="IMAP_USERNAME" name="IMAP_USERNAME" type="email" value="{{ cfg.IMAP_USERNAME }}" placeholder="you@example.com">
+    </div>
+
+    <div class="form-group">
+      <label for="IMAP_PASSWORD">Password / App Password</label>
+      <input id="IMAP_PASSWORD" name="IMAP_PASSWORD" type="password" value="{{ cfg.IMAP_PASSWORD }}" placeholder="••••••••••••">
+    </div>
+
+    <div class="form-section-label" style="margin-top:1.75rem">Anthropic</div>
+
+    <div class="form-group">
+      <label for="ANTHROPIC_API_KEY">API Key</label>
+      <input id="ANTHROPIC_API_KEY" name="ANTHROPIC_API_KEY" type="password" value="{{ cfg.ANTHROPIC_API_KEY }}" placeholder="sk-ant-…">
+    </div>
+
+    <div class="config-actions">
+      <button type="submit" class="btn btn-primary" id="btn-save">Save</button>
+      <button type="button" class="btn btn-secondary" id="btn-test" onclick="testConnection()">Test Connection</button>
+      <span class="config-status" id="config-status"></span>
+    </div>
+  </form>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  function saveConfig(e) {
+    e.preventDefault();
+    const btn = document.getElementById('btn-save');
+    const status = document.getElementById('config-status');
+    btn.disabled = true;
+    btn.textContent = 'Saving…';
+
+    const data = {};
+    ['IMAP_SERVER', 'IMAP_PORT', 'IMAP_USERNAME', 'IMAP_PASSWORD', 'ANTHROPIC_API_KEY'].forEach(k => {
+      const val = document.getElementById(k).value;
+      if (val) data[k] = val;
+    });
+
+    fetch('/api/config', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(data),
+    })
+      .then(r => r.json())
+      .then(d => {
+        status.className = 'config-status ' + (d.ok ? 'success' : 'error');
+        status.textContent = d.ok ? '✓ Saved' : '✗ ' + (d.error || 'Failed');
+      })
+      .catch(() => { status.className = 'config-status error'; status.textContent = '✗ Request failed'; })
+      .finally(() => { btn.disabled = false; btn.textContent = 'Save'; });
+  }
+
+  function testConnection() {
+    const btn = document.getElementById('btn-test');
+    const status = document.getElementById('config-status');
+    btn.disabled = true;
+    btn.textContent = 'Testing…';
+    status.className = 'config-status';
+    status.textContent = '';
+
+    fetch('/api/test-connection')
+      .then(r => r.json())
+      .then(d => {
+        status.className = 'config-status ' + (d.ok ? 'success' : 'error');
+        status.textContent = d.ok ? '✓ ' + d.message : '✗ ' + d.error;
+      })
+      .catch(() => { status.className = 'config-status error'; status.textContent = '✗ Request failed'; })
+      .finally(() => { btn.disabled = false; btn.textContent = 'Test Connection'; });
+  }
+</script>
+{% endblock %}

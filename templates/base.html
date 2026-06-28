@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}MailMatrix AI{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <nav class="nav">
+    <div class="nav-inner">
+      <a class="nav-logo" href="/">MailMatrix<span class="nav-logo-ai">AI</span></a>
+      <div class="nav-links">
+        <a href="/" class="{{ 'active' if request.path == '/' }}">Dashboard</a>
+        <a href="/summaries" class="{{ 'active' if request.path.startswith('/summaries') }}">Summaries</a>
+        <a href="/rules" class="{{ 'active' if request.path == '/rules' }}">Rules</a>
+        <a href="/config" class="{{ 'active' if request.path == '/config' }}">Config</a>
+      </div>
+    </div>
+  </nav>
+
+  <main class="main">
+    {% block content %}{% endblock %}
+  </main>
+
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,8 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+emailRules.json
+emailSummary/
+*.log
+.pytest_cache/

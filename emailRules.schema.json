@@ -1,0 +1,41 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Email Rules Schema",
+  "description": "Schema for defining email filtering and processing rules",
+  "type": "object",
+  "properties": {
+    "labels": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "labelName": {
+            "title": "Label Name",
+            "description": "Text of the label",
+            "type": "string"
+          },
+          "emailAddresses": {
+            "title": "Email Addresses",
+            "description": "Email addresses to be added to the label",
+            "type": "array",
+            "items": {
+              "title": "Email Address",
+              "description": "Email address to be added to the label",
+              "type": "string"
+            }
+          },
+          "emailDomains": {
+            "title": "Email Domains",
+            "description": "Email domains to be added to the label",
+            "type": "array",
+            "items": {
+              "title": "Email Domain",
+              "description": "Email domain to be added to the label",
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
+  }
+}

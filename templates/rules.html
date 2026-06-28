@@ -1,0 +1,430 @@
+{% extends "base.html" %}
+{% block title %}Email Rules — MailMatrix AI{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Email Rules</h1>
+  <p class="page-subtitle">{{ total_senders }} sender(s) and {{ total_domain_rules }} domain rule(s) across {{ label_names|length }} labels</p>
+</div>
+
+<div class="rules-layout">
+  <!-- Facet sidebar -->
+  <aside class="facet-sidebar">
+    <div class="facet-header">Labels</div>
+    <div class="facet-list">
+      <button class="facet-btn active" data-label="">All</button>
+      {% for name in label_names %}
+      <button class="facet-btn" data-label="{{ name }}">{{ name }}</button>
+      {% endfor %}
+    </div>
+  </aside>
+
+  <!-- Main content -->
+  <div class="rules-main">
+    <div class="search-bar">
+      <input class="search-input" type="search" placeholder="Search senders or domains…"
+             id="rules-search" oninput="scheduleFilter()" autocomplete="off">
+    </div>
+
+    <div id="groups-container">
+      {% for group in groups %}
+      <div class="domain-group"
+           id="group-{{ loop.index }}"
+           data-domain="{{ group.domain }}"
+           data-labels="{{ group.labels_in_group | join(',') }}">
+
+        <div class="domain-header">
+          <span class="domain-name">{{ group.domain }}</span>
+          <span class="domain-meta">
+            {% if group.senders|length %}{{ group.senders|length }} sender{{ 's' if group.senders|length != 1 }}{% endif %}
+            {% if group.domain_rules|length %}{% if group.senders|length %} · {% endif %}domain rule{% endif %}
+          </span>
+          {% if group.can_convert %}
+          <div class="convert-control">
+            {% if group.sender_label_pairs|length > 1 %}
+            <select class="convert-select" id="csel-{{ loop.index }}">
+              {% for short, full in group.sender_label_pairs %}
+              <option value="{{ full }}">{{ short }}</option>
+              {% endfor %}
+            </select>
+            {% endif %}
+            <button class="btn-convert"
+                    data-domain="{{ group.domain }}"
+                    {% if group.sender_label_pairs|length == 1 %}
+                    data-full-label="{{ group.sender_label_pairs[0][1] }}"
+                    data-label="{{ group.sender_label_pairs[0][0] }}"
+                    {% else %}
+                    data-select="csel-{{ loop.index }}"
+                    {% endif %}
+                    onclick="convertToDomain(this)">
+              ⇒ Domain rule
+            </button>
+          </div>
+          {% endif %}
+        </div>
+
+        {% for rule in group.domain_rules %}
+        <div class="rule-row domain-rule-row" data-label="{{ rule.label }}">
+          <span class="addr-cell domain-glob">*@{{ rule.domain }}</span>
+          <span class="label-chip">{{ rule.label }}</span>
+          <div class="rule-actions">
+            <button class="rule-btn rule-btn-delete"
+                    data-type="domain"
+                    data-domain="{{ rule.domain }}"
+                    data-full-label="{{ rule.full_label }}"
+                    onclick="deleteRule(this)"
+                    title="Delete rule">Delete</button>
+          </div>
+        </div>
+        {% endfor %}
+
+        {% for sender in group.senders %}
+        <div class="rule-row sender-row"
+             data-label="{{ sender.label }}"
+             data-address="{{ sender.address }}">
+          <span class="addr-cell">{{ sender.address }}</span>
+          <span class="label-chip">{{ sender.label }}</span>
+          <div class="rule-actions">
+            <button class="rule-btn rule-btn-edit"
+                    data-address="{{ sender.address }}"
+                    data-full-label="{{ sender.full_label }}"
+                    data-label="{{ sender.label }}"
+                    onclick="openEdit(this)"
+                    title="Edit label">Edit</button>
+            <button class="rule-btn rule-btn-delete"
+                    data-type="sender"
+                    data-address="{{ sender.address }}"
+                    data-full-label="{{ sender.full_label }}"
+                    onclick="deleteRule(this)"
+                    title="Delete rule">Delete</button>
+          </div>
+        </div>
+        {% endfor %}
+
+      </div>
+      {% endfor %}
+    </div>
+
+    <div class="rules-empty" id="rules-empty" style="display:none">No matches found.</div>
+  </div>
+</div>
+
+<!-- Edit modal -->
+<div id="edit-modal" class="modal-overlay" onclick="if(event.target===this)closeModal()">
+  <div class="modal-card">
+    <div class="modal-header">
+      <h3 class="modal-title">Edit Rule</h3>
+      <button class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="modal-sender-label">Sender</div>
+      <div class="modal-sender" id="modal-sender"></div>
+      <div class="modal-field-label" style="margin-top:1.25rem">Move to label</div>
+      <div class="label-picker" id="label-picker">
+        {% for name in label_names %}
+        <button class="label-pick-btn" data-label="{{ name }}" onclick="pickLabel(this)">{{ name }}</button>
+        {% endfor %}
+      </div>
+      <div class="or-divider">or create new</div>
+      <input type="text" id="new-label-input" class="new-label-input"
+             placeholder="New label name…" oninput="onNewLabelType()">
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-primary" id="modal-save" onclick="saveEdit()">Save &amp; Move Emails</button>
+      <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+      <span class="modal-status" id="modal-status"></span>
+    </div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div id="toast" class="toast" aria-live="polite"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const ALL_LABELS = {{ label_names | tojson }};
+  let activeLabel = '';
+  let editRow = null;
+  let editAddress = '';
+  let editOldFullLabel = '';
+  let selectedLabel = '';
+
+  // ── Pre-built index (avoids querySelectorAll inside the filter loop) ─────────
+  let _gi = [];  // group index
+
+  function _buildIndex() {
+    _gi = Array.from(document.querySelectorAll('.domain-group')).map(el => ({
+      el,
+      domain: (el.dataset.domain || '').toLowerCase(),
+      labels: el.dataset.labels ? el.dataset.labels.split(',') : [],
+      rows: Array.from(el.querySelectorAll('.rule-row')).map(r => ({
+        el: r,
+        label: r.dataset.label || '',
+        address: (r.dataset.address || '').toLowerCase(),
+      })),
+    }));
+  }
+
+  // ── Facets ──────────────────────────────────────────────────────────────────
+  document.querySelectorAll('.facet-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.facet-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      activeLabel = btn.dataset.label;
+      filterRules();
+    });
+  });
+
+  let _ft;
+  function scheduleFilter() {
+    clearTimeout(_ft);
+    _ft = setTimeout(filterRules, 200);
+  }
+
+  function filterRules() {
+    const q = document.getElementById('rules-search').value.toLowerCase().trim();
+    let anyVisible = false;
+
+    for (const g of _gi) {
+      let rowsVisible = 0;
+      for (const row of g.rows) {
+        const labelOk = !activeLabel || row.label === activeLabel;
+        const textOk = !q || row.address.includes(q) || g.domain.includes(q) || row.label.includes(q);
+        const show = labelOk && textOk;
+        row.el.style.display = show ? '' : 'none';
+        if (show) rowsVisible++;
+      }
+      const groupLabelOk = !activeLabel || g.labels.includes(activeLabel);
+      const groupVisible = groupLabelOk && rowsVisible > 0;
+      g.el.style.display = groupVisible ? '' : 'none';
+      if (groupVisible) anyVisible = true;
+    }
+
+    document.getElementById('rules-empty').style.display = anyVisible ? 'none' : 'block';
+  }
+
+  // ── Delete ──────────────────────────────────────────────────────────────────
+  function deleteRule(btn) {
+    const type = btn.dataset.type;
+    const fullLabel = btn.dataset.fullLabel;
+    const what = type === 'domain'
+      ? `*@${btn.dataset.domain} → ${fullLabel.replace('MailMatrixCategories/', '')}`
+      : `${btn.dataset.address} → ${fullLabel.replace('MailMatrixCategories/', '')}`;
+
+    if (!confirm(`Delete rule:\n${what}?`)) return;
+
+    const body = { type, full_label: fullLabel };
+    if (type === 'sender') body.address = btn.dataset.address;
+    if (type === 'domain') body.domain = btn.dataset.domain;
+
+    fetch('/api/rules/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+      .then(r => r.json())
+      .then(data => {
+        if (data.ok) {
+          const row = btn.closest('.rule-row');
+          const group = btn.closest('.domain-group');
+          row.remove();
+          pruneGroup(group);
+          showToast('Rule deleted', 'success');
+        } else {
+          showToast('Error: ' + (data.error || 'Unknown'), 'error');
+        }
+      })
+      .catch(() => showToast('Request failed', 'error'));
+  }
+
+  // ── Edit modal ──────────────────────────────────────────────────────────────
+  function openEdit(btn) {
+    editRow = btn.closest('.rule-row');
+    editAddress = btn.dataset.address;
+    editOldFullLabel = btn.dataset.fullLabel;
+    selectedLabel = btn.dataset.label;
+
+    document.getElementById('modal-sender').textContent = editAddress;
+    document.getElementById('new-label-input').value = '';
+    document.getElementById('modal-status').textContent = '';
+
+    document.querySelectorAll('.label-pick-btn').forEach(b => {
+      b.classList.toggle('active', b.dataset.label === selectedLabel);
+    });
+
+    document.getElementById('edit-modal').style.display = 'flex';
+  }
+
+  function closeModal() {
+    document.getElementById('edit-modal').style.display = 'none';
+    editRow = null;
+  }
+
+  function pickLabel(btn) {
+    selectedLabel = btn.dataset.label;
+    document.querySelectorAll('.label-pick-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById('new-label-input').value = '';
+  }
+
+  function onNewLabelType() {
+    document.querySelectorAll('.label-pick-btn').forEach(b => b.classList.remove('active'));
+    selectedLabel = document.getElementById('new-label-input').value.trim();
+  }
+
+  function saveEdit() {
+    const newLabelTyped = document.getElementById('new-label-input').value.trim();
+    const finalLabel = newLabelTyped || selectedLabel;
+    if (!finalLabel) {
+      document.getElementById('modal-status').textContent = 'Pick or type a label.';
+      return;
+    }
+
+    const saveBtn = document.getElementById('modal-save');
+    const statusEl = document.getElementById('modal-status');
+    saveBtn.disabled = true;
+    statusEl.textContent = 'Saving…';
+
+    fetch('/api/rules/update-sender', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        address: editAddress,
+        old_full_label: editOldFullLabel,
+        new_label: finalLabel,
+      }),
+    })
+      .then(r => r.json())
+      .then(data => {
+        if (data.ok) {
+          // Update chip and data attrs in-place
+          const chip = editRow.querySelector('.label-chip');
+          chip.textContent = finalLabel.replace('MailMatrixCategories/', '');
+          editRow.dataset.label = finalLabel.replace('MailMatrixCategories/', '');
+          // Update edit btn's data attrs so a second edit works
+          const editBtn = editRow.querySelector('.rule-btn-edit');
+          if (editBtn) {
+            editBtn.dataset.label = chip.textContent;
+            editBtn.dataset.fullLabel = finalLabel.startsWith('MailMatrixCategories/')
+              ? finalLabel : `MailMatrixCategories/${finalLabel}`;
+          }
+          // Refresh group labels and index
+          updateGroupLabels(editRow.closest('.domain-group'));
+          _buildIndex();
+          filterRules();
+          const moved = data.moved || 0;
+          showToast(`Saved. ${moved} message${moved !== 1 ? 's' : ''} moved.`, 'success');
+          closeModal();
+        } else {
+          statusEl.textContent = 'Error: ' + (data.error || 'Unknown');
+        }
+      })
+      .catch(() => { statusEl.textContent = 'Request failed'; })
+      .finally(() => { saveBtn.disabled = false; });
+  }
+
+  // ── Convert to domain rule ─────────────────────────────────────────────────
+  function convertToDomain(btn) {
+    const domain = btn.dataset.domain;
+
+    // Resolve label: pre-filled on single-label domains, or read from sibling select
+    let fullLabel = btn.dataset.fullLabel;
+    let shortLabel = btn.dataset.label;
+    if (btn.dataset.select) {
+      const sel = document.getElementById(btn.dataset.select);
+      fullLabel = sel.value;
+      shortLabel = sel.options[sel.selectedIndex].text;
+    }
+
+    if (!confirm(`Create a domain rule for *@${domain} → ${shortLabel}?\n\nThis will replace individual sender rules for this domain that belong to ${shortLabel}.`)) return;
+
+    fetch('/api/rules/convert-domain', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ domain, full_label: fullLabel }),
+    })
+      .then(r => r.json())
+      .then(data => {
+        if (data.ok) {
+          const group = btn.closest('.domain-group');
+
+          // Remove sender rows that belonged to this label (others remain)
+          group.querySelectorAll('.sender-row').forEach(r => {
+            if (r.dataset.label === shortLabel) r.remove();
+          });
+
+          // Remove the entire convert-control (select + button)
+          btn.closest('.convert-control')?.remove();
+
+          // Update meta text
+          const meta = group.querySelector('.domain-meta');
+          if (meta) {
+            const remaining = group.querySelectorAll('.sender-row').length;
+            meta.textContent = remaining ? `${remaining} sender${remaining !== 1 ? 's' : ''} · domain rule` : 'domain rule';
+          }
+
+          // Insert domain rule row after the header
+          const header = group.querySelector('.domain-header');
+          const newRow = document.createElement('div');
+          newRow.className = 'rule-row domain-rule-row';
+          newRow.dataset.label = shortLabel;
+          newRow.innerHTML = `
+            <span class="addr-cell domain-glob">*@${domain}</span>
+            <span class="label-chip">${shortLabel}</span>
+            <div class="rule-actions">
+              <button class="rule-btn rule-btn-delete"
+                      data-type="domain"
+                      data-domain="${domain}"
+                      data-full-label="${fullLabel}"
+                      onclick="deleteRule(this)"
+                      title="Delete rule">Delete</button>
+            </div>`;
+          header.after(newRow);
+
+          updateGroupLabels(group);
+          _buildIndex();
+          showToast(`Domain rule *@${domain} → ${shortLabel} created`, 'success');
+        } else {
+          showToast('Error: ' + (data.error || 'Unknown'), 'error');
+        }
+      })
+      .catch(() => showToast('Request failed', 'error'));
+  }
+
+  // ── Utilities ───────────────────────────────────────────────────────────────
+  function pruneGroup(group) {
+    const remaining = group.querySelectorAll('.rule-row');
+    if (remaining.length === 0) {
+      group.remove();
+    } else {
+      updateGroupLabels(group);
+    }
+    _buildIndex();
+  }
+
+  function updateGroupLabels(group) {
+    if (!group) return;
+    const labels = new Set();
+    group.querySelectorAll('.rule-row').forEach(r => {
+      if (r.dataset.label) labels.add(r.dataset.label);
+    });
+    group.dataset.labels = [...labels].join(',');
+  }
+
+  let toastTimer;
+  function showToast(msg, type = 'success') {
+    const el = document.getElementById('toast');
+    el.textContent = msg;
+    el.className = 'toast toast-' + type + ' toast-visible';
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { el.className = 'toast'; }, 3000);
+  }
+
+  // Close modal on Escape
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
+
+  // Build index on page load
+  _buildIndex();
+</script>
+{% endblock %}

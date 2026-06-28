@@ -1,0 +1,200 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — MailMatrix AI{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Dashboard</h1>
+  <p class="page-subtitle">Overview of your MailMatrix AI inbox</p>
+</div>
+
+<div class="stat-grid">
+  <div class="stat-card" id="stat-inbox">
+    <div class="stat-num" id="inbox-count">—</div>
+    <div class="stat-label">Inbox</div>
+    <div class="stat-note" id="inbox-note">Loading…</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-num green">{{ label_count }}</div>
+    <div class="stat-label">Labels</div>
+    <div class="stat-note">Filing categories</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-num blue">{{ rules_count }}</div>
+    <div class="stat-label">Rules</div>
+    <div class="stat-note">Senders + domains</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-num orange">{{ summary_count }}</div>
+    <div class="stat-label">Reports</div>
+    <div class="stat-note">Saved summaries</div>
+  </div>
+</div>
+
+<div class="action-row">
+  <button class="btn btn-primary" id="btn-sort" onclick="runSort()">
+    <span class="btn-icon">↓</span> Sort Inbox Now
+  </button>
+</div>
+
+<div class="dash-columns">
+  <!-- Summaries card -->
+  <div class="card summary-gen-card">
+    <div class="card-header">Email Summaries</div>
+
+    {% for day in recent_days %}
+    <div class="summary-gen-row" id="summary-row-{{ day.date }}">
+      <div class="summary-gen-day">
+        <span class="summary-gen-label">{{ day.label }}</span>
+        <span class="summary-gen-date">{{ day.date }}</span>
+      </div>
+      {% if day.has_summary %}
+      <a class="btn btn-sm btn-view" href="/summaries/{{ day.filename }}" target="_blank">View →</a>
+      {% else %}
+      <button class="btn btn-sm btn-generate"
+              data-date="{{ day.date }}"
+              onclick="generateFor('{{ day.date }}', this)">Generate</button>
+      {% endif %}
+    </div>
+    {% endfor %}
+
+    <div class="summary-gen-row summary-gen-custom">
+      <div class="summary-gen-day">
+        <span class="summary-gen-label">Other date</span>
+      </div>
+      <input type="date" id="custom-date" class="date-input" max="{{ today }}" value="{{ today }}">
+      <button class="btn btn-sm btn-generate" id="btn-custom-gen" onclick="generateCustom()">Generate</button>
+    </div>
+  </div>
+
+  <!-- Activity log -->
+  <div class="card" id="activity-card">
+    <div class="card-header">Activity</div>
+    <div class="activity-log" id="activity-log">
+      <div class="activity-empty">No activity yet.</div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  fetch('/api/inbox-stats')
+    .then(r => r.json())
+    .then(data => {
+      const el = document.getElementById('inbox-count');
+      const note = document.getElementById('inbox-note');
+      if (data.connected) {
+        el.textContent = data.inbox_count;
+        el.className = 'stat-num ' + (data.inbox_count > 20 ? 'red' : data.inbox_count > 5 ? 'orange' : 'green');
+        note.textContent = 'Messages in INBOX';
+      } else {
+        el.textContent = '?';
+        note.textContent = 'Not connected';
+      }
+    })
+    .catch(() => {
+      document.getElementById('inbox-count').textContent = '?';
+      document.getElementById('inbox-note').textContent = 'Could not connect';
+    });
+
+  function addActivity(msg, cls) {
+    const log = document.getElementById('activity-log');
+    log.querySelector('.activity-empty')?.remove();
+    const ts = new Date().toLocaleTimeString();
+    const entry = document.createElement('div');
+    entry.className = 'activity-entry ' + cls;
+    entry.innerHTML = `<span class="activity-time">${ts}</span> ${msg}`;
+    log.prepend(entry);
+    return entry;
+  }
+
+  function runSort() {
+    const btn = document.getElementById('btn-sort');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="btn-icon">↓</span> Sorting…';
+    const entry = addActivity('Sorting inbox…', 'pending');
+
+    fetch('/api/sort', { method: 'POST' })
+      .then(r => r.json())
+      .then(data => {
+        if (data.ok) {
+          entry.className = 'activity-entry success';
+          entry.innerHTML = entry.innerHTML.replace('Sorting inbox…', '✓ Inbox sorted');
+          fetch('/api/inbox-stats').then(r => r.json()).then(d => {
+            if (d.connected) document.getElementById('inbox-count').textContent = d.inbox_count;
+          });
+        } else {
+          entry.className = 'activity-entry error';
+          entry.innerHTML = entry.innerHTML.replace('Sorting inbox…', '✗ Sort failed: ' + (data.error || 'Unknown').split('\n')[0]);
+        }
+      })
+      .catch(() => {
+        entry.className = 'activity-entry error';
+        entry.innerHTML = entry.innerHTML.replace('Sorting inbox…', '✗ Request failed');
+      })
+      .finally(() => {
+        btn.disabled = false;
+        btn.innerHTML = '<span class="btn-icon">↓</span> Sort Inbox Now';
+      });
+  }
+
+  function generateFor(dateStr, btn) {
+    if (btn) { btn.disabled = true; btn.textContent = 'Generating…'; }
+    const entry = addActivity(`Generating summary for ${dateStr}…`, 'pending');
+
+    fetch('/api/generate-summary', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ date: dateStr }),
+    })
+      .then(r => r.json())
+      .then(data => {
+        if (data.ok) {
+          entry.className = 'activity-entry success';
+          entry.innerHTML = entry.innerHTML.replace(
+            `Generating summary for ${dateStr}…`,
+            `✓ Summary for ${dateStr} — <a href="/summaries/${data.filename}" target="_blank">View →</a>`
+          );
+          // Upgrade the row button to a View link
+          const row = document.getElementById('summary-row-' + dateStr);
+          const rowBtn = row?.querySelector('.btn-generate');
+          if (rowBtn) {
+            const link = document.createElement('a');
+            link.className = 'btn btn-sm btn-view';
+            link.href = '/summaries/' + data.filename;
+            link.target = '_blank';
+            link.textContent = 'View →';
+            rowBtn.replaceWith(link);
+          } else if (btn) {
+            // custom date row: re-enable
+            btn.disabled = false;
+            btn.textContent = 'Generate';
+          }
+        } else {
+          entry.className = 'activity-entry error';
+          const errMsg = (data.error || 'Unknown error').split('\n').pop().trim() || data.error;
+          entry.innerHTML = entry.innerHTML.replace(
+            `Generating summary for ${dateStr}…`,
+            `✗ ${errMsg}`
+          );
+          if (btn) { btn.disabled = false; btn.textContent = 'Generate'; }
+        }
+      })
+      .catch(() => {
+        entry.className = 'activity-entry error';
+        entry.innerHTML = entry.innerHTML.replace(
+          `Generating summary for ${dateStr}…`,
+          '✗ Request failed'
+        );
+        if (btn) { btn.disabled = false; btn.textContent = 'Generate'; }
+      });
+  }
+
+  function generateCustom() {
+    const dateStr = document.getElementById('custom-date').value;
+    if (!dateStr) return;
+    const btn = document.getElementById('btn-custom-gen');
+    generateFor(dateStr, btn);
+  }
+</script>
+{% endblock %}

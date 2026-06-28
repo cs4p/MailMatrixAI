@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Email Summaries — MailMatrix AI{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Email Summaries</h1>
+  <p class="page-subtitle">Daily AI-generated inbox reports</p>
+</div>
+
+{% if files %}
+<div class="summary-grid">
+  {% for f in files %}
+  <a class="summary-card" href="/summaries/{{ f.filename }}" target="_blank">
+    <div class="summary-icon">✦</div>
+    <div class="summary-label">{{ f.label }}</div>
+    <div class="summary-filename">{{ f.filename }}</div>
+    <div class="summary-arrow">→</div>
+  </a>
+  {% endfor %}
+</div>
+{% else %}
+<div class="empty-state">
+  <div class="empty-icon">📭</div>
+  <div class="empty-title">No summaries yet</div>
+  <div class="empty-desc">Generate one from the <a href="/">Dashboard</a>.</div>
+</div>
+{% endif %}
+{% endblock %}
