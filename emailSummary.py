@@ -11,7 +11,7 @@ import webbrowser
 from datetime import date, datetime
 from html import escape as _e
 from http.server import BaseHTTPRequestHandler
-from typing import Callable, Dict, List
+from typing import Callable, Dict, List, Optional
 
 import anthropic
 from dotenv import load_dotenv
@@ -81,6 +81,14 @@ h2 {
   font-size: .7rem; background: #fff3e0; color: #e65100;
   padding: .15rem .4rem; border-radius: 4px; border: 1px solid #ffcc80;
 }
+.label-select {
+  font-size: .8rem; font-family: 'SF Mono', 'Fira Code', monospace;
+  padding: .25rem .5rem; border-radius: 6px; border: 1px solid #c7d8ed;
+  background: #e8f4fd; color: #0066cc; cursor: pointer;
+  max-width: 220px;
+}
+.label-select:focus { outline: 2px solid #0066cc; outline-offset: 1px; }
+.label-select:disabled { opacity: .6; cursor: default; }
 .suggestion-reason { font-size: .8rem; color: #86868b; flex: 1; min-width: 0; }
 .accept-btn {
   padding: .35rem .9rem; background: #34c759; color: white;
@@ -109,9 +117,12 @@ h2 {
 _JS = """\
 async function handleAccept(btn) {
   const fromAddr = btn.dataset.from;
-  const label = btn.dataset.label;
+  const sug = btn.closest('.suggestion');
+  const select = sug.querySelector('.label-select');
+  const label = select ? select.value : btn.dataset.label;
   btn.disabled = true;
   btn.textContent = 'Moving…';
+  if (select) select.disabled = true;
   try {
     const res = await fetch('/accept', {
       method: 'POST',
@@ -120,16 +131,18 @@ async function handleAccept(btn) {
     });
     const data = await res.json();
     if (data.ok) {
-      const sug = btn.closest('.suggestion');
-      sug.innerHTML = '<span class="accepted-msg">✓ Moved to ' + label + ' · emailRules.json updated</span>';
+      const shortLabel = label.replace('MailMatrixCategories/', '');
+      sug.innerHTML = '<span class="accepted-msg">✓ Moved to ' + shortLabel + ' · emailRules.json updated</span>';
     } else {
       btn.disabled = false;
       btn.textContent = 'Accept';
+      if (select) select.disabled = false;
       alert('Error: ' + (data.error || 'Unknown error'));
     }
   } catch (err) {
     btn.disabled = false;
     btn.textContent = 'Accept';
+    if (select) select.disabled = false;
     alert('Error: ' + err.message);
   }
 }
@@ -326,6 +339,7 @@ def build_html_report(
     inbox_emails: List[dict],
     filed_emails: Dict[str, List[dict]],
     analysis: dict,
+    available_labels: Optional[List[str]] = None,
 ) -> str:
     total_filed = sum(len(v) for v in filed_emails.values())
     action_items = analysis.get('action_required', [])
@@ -367,20 +381,31 @@ def build_html_report(
 
             suggestion_html = ''
             if sug.get('suggested_label'):
-                label = sug['suggested_label']
+                suggested = sug['suggested_label']
                 is_new = sug.get('is_new_label', False)
-                new_class = ' new-label' if is_new else ''
-                new_badge = ' <span class="new-badge">new label</span>' if is_new else ''
                 reason = f'<span class="suggestion-reason">{_e(sug.get("reason", ""))}</span>'
+
+                # Build option list: all known labels + suggested (if new) pre-selected
+                all_opts = list(available_labels or [])
+                if suggested not in all_opts:
+                    all_opts = [suggested] + all_opts
+                options_html = ''.join(
+                    f'<option value="{_e(lbl)}"'
+                    f'{" selected" if lbl == suggested else ""}>'
+                    f'{_e(lbl.replace("MailMatrixCategories/", ""))}'
+                    f'</option>'
+                    for lbl in all_opts
+                )
+                new_badge = ' <span class="new-badge">new label</span>' if is_new else ''
+                select_html = f'<select class="label-select">{options_html}</select>{new_badge}'
                 btn = (
                     f'<button class="accept-btn"'
                     f' data-from="{_e(em["from_addr"])}"'
-                    f' data-label="{_e(label)}"'
                     f' onclick="handleAccept(this)">Accept</button>'
                 )
                 suggestion_html = (
                     f'<div class="suggestion">'
-                    f'<span class="label-tag{new_class}">{_e(label)}</span>{new_badge}'
+                    f'{select_html}'
                     f'{reason}{btn}'
                     f'</div>'
                 )
@@ -629,7 +654,7 @@ def main() -> None:
 
     analysis = analyze_with_claude(inbox_emails, labels)
 
-    report = build_html_report(target_date, inbox_emails, filed_emails, analysis)
+    report = build_html_report(target_date, inbox_emails, filed_emails, analysis, labels)
 
     output_dir = "emailSummary"
     os.makedirs(output_dir, exist_ok=True)

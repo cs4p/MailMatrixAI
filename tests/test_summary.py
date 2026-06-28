@@ -158,6 +158,49 @@ def test_build_html_report_accept_button_for_suggestion():
     assert "MailMatrixCategories/Personal" in html
 
 
+def test_build_html_report_suggestion_renders_as_dropdown():
+    email = _make_email("alice@nowhere.com", subject="Hello")
+    labels = ["MailMatrixCategories/Personal", "MailMatrixCategories/Work", "MailMatrixCategories/Shopping"]
+    analysis = {
+        "action_required": [],
+        "filing_suggestions": [{
+            "index": 1,
+            "from": "alice@nowhere.com",
+            "subject": "Hello",
+            "suggested_label": "MailMatrixCategories/Personal",
+            "is_new_label": False,
+            "reason": "Looks personal",
+        }],
+    }
+    html = build_html_report(date(2026, 6, 28), [email], {}, analysis, available_labels=labels)
+    assert '<select class="label-select">' in html
+    assert 'value="MailMatrixCategories/Personal" selected' in html
+    assert 'value="MailMatrixCategories/Work"' in html
+    assert 'value="MailMatrixCategories/Shopping"' in html
+
+
+def test_build_html_report_new_label_appears_first_in_dropdown():
+    email = _make_email("promo@new.com", subject="Hi")
+    labels = ["MailMatrixCategories/Work"]
+    analysis = {
+        "action_required": [],
+        "filing_suggestions": [{
+            "index": 1,
+            "from": "promo@new.com",
+            "subject": "Hi",
+            "suggested_label": "MailMatrixCategories/Promos",
+            "is_new_label": True,
+            "reason": "Promotional email",
+        }],
+    }
+    html = build_html_report(date(2026, 6, 28), [email], {}, analysis, available_labels=labels)
+    # Suggested new label should be selected
+    assert 'value="MailMatrixCategories/Promos" selected' in html
+    # Existing labels should also be present
+    assert 'value="MailMatrixCategories/Work"' in html
+    assert "new label" in html
+
+
 def test_build_html_report_filed_emails():
     filed = {
         "MailMatrixCategories/Work": [
