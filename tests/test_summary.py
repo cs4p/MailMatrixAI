@@ -1,6 +1,7 @@
 import json
+import sys
 from datetime import date
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, mock_open, patch
 
 import anthropic
 import httpx
@@ -422,3 +423,117 @@ def test_accept_filing_no_messages_to_move(mock_imap, tmp_path):
     assert result["moved"] == 0
     mock_imap.copy.assert_not_called()
     mock_imap.expunge.assert_not_called()
+
+
+# ── main() — sort-before-summary behaviour ────────────────────────────────────
+
+def _make_sort_result(returncode=0):
+    r = MagicMock()
+    r.returncode = returncode
+    r.stdout = ""
+    r.stderr = "sort error output" if returncode != 0 else ""
+    return r
+
+
+def _main_patches(mock_imap, tmp_path, monkeypatch):
+    """Return a dict of patches needed to run emailSummary.main() in tests."""
+    monkeypatch.setenv("IMAP_SERVER", "imap.test.com")
+    monkeypatch.setenv("IMAP_PORT", "993")
+    monkeypatch.setenv("IMAP_USERNAME", "user@test.com")
+    monkeypatch.setenv("IMAP_PASSWORD", "pass")
+    monkeypatch.setenv("RULES_PATH", str(tmp_path / "emailRules.json"))
+
+    mock_imap.list.return_value = ("OK", [])
+    mock_imap.search.return_value = ("OK", [b""])
+
+    return {
+        "emailSummary.connect_to_imap": mock_imap,
+        "emailSummary.get_all_labels": [],
+        "emailSummary.fetch_folder_emails": [],
+        "emailSummary.fetch_inbox_with_body": [],
+        "emailSummary.analyze_with_claude": {"action_required": [], "filing_suggestions": []},
+    }
+
+
+def test_main_runs_sort_script_before_imap(mock_imap, tmp_path, monkeypatch):
+    """main() must call sortEmail.py as a subprocess before opening an IMAP connection."""
+    _main_patches(mock_imap, tmp_path, monkeypatch)
+    call_order = []
+
+    def track_subprocess(cmd, **kw):
+        call_order.append("sort")
+        return _make_sort_result(0)
+
+    def track_imap(*args, **kw):
+        call_order.append("imap")
+        return mock_imap
+
+    with (
+        patch("sys.argv", ["emailSummary.py", "--no-serve"]),
+        patch("emailSummary.subprocess.run", side_effect=track_subprocess),
+        patch("emailSummary.connect_to_imap", side_effect=track_imap),
+        patch("emailSummary.get_all_labels", return_value=[]),
+        patch("emailSummary.fetch_inbox_with_body", return_value=[]),
+        patch("emailSummary.analyze_with_claude", return_value={"action_required": [], "filing_suggestions": []}),
+        patch("emailSummary.os.makedirs"),
+        patch("builtins.open", mock_open()),
+    ):
+        from emailSummary import main
+        main()
+
+    assert "sort" in call_order
+    assert "imap" in call_order
+    assert call_order.index("sort") < call_order.index("imap")
+
+
+def test_main_sort_script_called_with_correct_path(mock_imap, tmp_path, monkeypatch):
+    """subprocess.run should receive the sortEmail.py path as the command."""
+    _main_patches(mock_imap, tmp_path, monkeypatch)
+    captured = {}
+
+    def capture_subprocess(cmd, **kw):
+        captured["cmd"] = cmd
+        return _make_sort_result(0)
+
+    with (
+        patch("sys.argv", ["emailSummary.py", "--no-serve"]),
+        patch("emailSummary.subprocess.run", side_effect=capture_subprocess),
+        patch("emailSummary.connect_to_imap", return_value=mock_imap),
+        patch("emailSummary.get_all_labels", return_value=[]),
+        patch("emailSummary.fetch_inbox_with_body", return_value=[]),
+        patch("emailSummary.analyze_with_claude", return_value={"action_required": [], "filing_suggestions": []}),
+        patch("emailSummary.os.makedirs"),
+        patch("builtins.open", mock_open()),
+    ):
+        from emailSummary import main
+        main()
+
+    assert captured.get("cmd") is not None
+    assert captured["cmd"][0] == sys.executable
+    assert captured["cmd"][1].endswith("sortEmail.py")
+
+
+def test_main_continues_after_sort_failure(mock_imap, tmp_path, monkeypatch):
+    """If sortEmail.py exits non-zero, main() should log a warning and still generate the report."""
+    _main_patches(mock_imap, tmp_path, monkeypatch)
+    summary_written = {}
+
+    def capture_open(path, *args, **kw):
+        if "email_summary_" in str(path):
+            summary_written["path"] = str(path)
+        return mock_open()(path, *args, **kw)
+
+    with (
+        patch("sys.argv", ["emailSummary.py", "--no-serve"]),
+        patch("emailSummary.subprocess.run", return_value=_make_sort_result(1)),
+        patch("emailSummary.connect_to_imap", return_value=mock_imap),
+        patch("emailSummary.get_all_labels", return_value=[]),
+        patch("emailSummary.fetch_inbox_with_body", return_value=[]),
+        patch("emailSummary.analyze_with_claude", return_value={"action_required": [], "filing_suggestions": []}),
+        patch("emailSummary.os.makedirs"),
+        patch("builtins.open", side_effect=capture_open),
+    ):
+        from emailSummary import main
+        main()  # must not raise
+
+    assert "path" in summary_written, "Report file was not written after sort failure"
