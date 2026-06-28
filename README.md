@@ -1,20 +1,20 @@
 # MailMatrix AI
 
-A Gmail management pipeline with a Flask web UI. Connects to Gmail via IMAP to automatically file incoming mail into labeled folders, and generates AI-powered daily summary reports using Claude.
+An email management pipeline with a Flask web UI. Connects to any IMAP server to automatically file incoming mail into folders, and generates AI-powered daily summary reports using Claude.
 
 ## How it works
 
 Three CLI scripts handle the core pipeline:
 
-1. **`emailRulesInit.py`** — Crawls all `MailMatrixCategories/*` Gmail labels, extracts the sender address from every message, and writes `emailRules.json` (your filing rules).
-2. **`sortEmail.py`** — Reads `emailRules.json` and moves matching INBOX messages into their labels.
-3. **`emailSummary.py`** — Generates a daily HTML report: action-required items, unmatched INBOX emails with Claude-suggested labels, and a log of what was filed.
+1. **`emailRulesInit.py`** — Crawls all `MailMatrixCategories/*` IMAP folders, extracts the sender address from every message, and writes `emailRules.json` (your filing rules).
+2. **`sortEmail.py`** — Reads `emailRules.json` and moves matching INBOX messages into their folders.
+3. **`emailSummary.py`** — Generates a daily HTML report: action-required items, unmatched INBOX emails with Claude-suggested folders, and a log of what was filed.
 
 The web UI (`app.py`) wraps all three scripts and adds a rules browser with search, faceted filtering, and inline editing.
 
 ## Setup
 
-**Prerequisites:** Python 3.9+, a Gmail account with IMAP enabled, a Gmail [App Password](https://support.google.com/accounts/answer/185833), and an [Anthropic API key](https://console.anthropic.com/settings/keys).
+**Prerequisites:** Python 3.9+, an IMAP-enabled mail account, and an [Anthropic API key](https://console.anthropic.com/settings/keys).
 
 ```bash
 git clone <repo>
@@ -31,12 +31,22 @@ cp .env.example .env
 ### `.env` configuration
 
 ```
-IMAP_SERVER=imap.gmail.com
+IMAP_SERVER=imap.your-provider.com
 IMAP_PORT=993
-IMAP_USERNAME=your_email@gmail.com
-IMAP_PASSWORD=your_app_password
+IMAP_USERNAME=your@email.com
+IMAP_PASSWORD=your_password
 ANTHROPIC_API_KEY=sk-ant-...
 ```
+
+Common server addresses:
+
+| Provider | IMAP server |
+|---|---|
+| Gmail | `imap.gmail.com` (use an [App Password](https://support.google.com/accounts/answer/185833)) |
+| Fastmail | `imap.fastmail.com` |
+| Outlook / Hotmail | `outlook.office365.com` |
+| Apple iCloud | `imap.mail.me.com` |
+| Yahoo | `imap.mail.yahoo.com` |
 
 ## Usage
 
@@ -64,9 +74,9 @@ python emailSummary.py 2026-06-27     # summary for a specific date
 python emailSummary.py --no-serve     # generate report without opening a browser
 ```
 
-## Gmail label conventions
+## Folder conventions
 
-Filing targets must live under a `MailMatrixCategories/` parent label in Gmail (e.g. `MailMatrixCategories/Work`, `MailMatrixCategories/Newsletters`). Create these labels in Gmail before running `emailRulesInit.py`.
+Filing targets must live under a `MailMatrixCategories/` parent folder (e.g. `MailMatrixCategories/Work`, `MailMatrixCategories/Newsletters`). Create these folders in your mail client before running `emailRulesInit.py`. The `/` character is the IMAP hierarchy delimiter — most providers support nested folders this way.
 
 ## Filing rules
 
