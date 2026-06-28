@@ -220,7 +220,7 @@
 
     fetch('/api/rules/delete', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
       body: JSON.stringify(body),
     })
       .then(r => r.json())
@@ -288,7 +288,7 @@
 
     fetch('/api/rules/update-sender', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
       body: JSON.stringify({
         address: editAddress,
         old_full_label: editOldFullLabel,
@@ -341,7 +341,7 @@
 
     fetch('/api/rules/convert-domain', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
       body: JSON.stringify({ domain, full_label: fullLabel }),
     })
       .then(r => r.json())
@@ -365,21 +365,31 @@
           }
 
           // Insert domain rule row after the header
+          // M4: build DOM imperatively to avoid XSS via stored label/domain values
           const header = group.querySelector('.domain-header');
           const newRow = document.createElement('div');
           newRow.className = 'rule-row domain-rule-row';
           newRow.dataset.label = shortLabel;
-          newRow.innerHTML = `
-            <span class="addr-cell domain-glob">*@${domain}</span>
-            <span class="label-chip">${shortLabel}</span>
-            <div class="rule-actions">
-              <button class="rule-btn rule-btn-delete"
-                      data-type="domain"
-                      data-domain="${domain}"
-                      data-full-label="${fullLabel}"
-                      onclick="deleteRule(this)"
-                      title="Delete rule">Delete</button>
-            </div>`;
+          const globSpan = document.createElement('span');
+          globSpan.className = 'addr-cell domain-glob';
+          globSpan.textContent = '*@' + domain;
+          const chipSpan = document.createElement('span');
+          chipSpan.className = 'label-chip';
+          chipSpan.textContent = shortLabel;
+          const actions = document.createElement('div');
+          actions.className = 'rule-actions';
+          const delBtn = document.createElement('button');
+          delBtn.className = 'rule-btn rule-btn-delete';
+          delBtn.dataset.type = 'domain';
+          delBtn.dataset.domain = domain;
+          delBtn.dataset.fullLabel = fullLabel;
+          delBtn.title = 'Delete rule';
+          delBtn.textContent = 'Delete';
+          delBtn.addEventListener('click', () => deleteRule(delBtn));
+          actions.appendChild(delBtn);
+          newRow.appendChild(globSpan);
+          newRow.appendChild(chipSpan);
+          newRow.appendChild(actions);
           header.after(newRow);
 
           updateGroupLabels(group);
@@ -410,15 +420,6 @@
       if (r.dataset.label) labels.add(r.dataset.label);
     });
     group.dataset.labels = [...labels].join(',');
-  }
-
-  let toastTimer;
-  function showToast(msg, type = 'success') {
-    const el = document.getElementById('toast');
-    el.textContent = msg;
-    el.className = 'toast toast-' + type + ' toast-visible';
-    clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => { el.className = 'toast'; }, 3000);
   }
 
   // Close modal on Escape

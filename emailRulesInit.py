@@ -1,5 +1,3 @@
-import email
-import imaplib
 import json
 import logging
 import os
@@ -8,19 +6,28 @@ from typing import Dict, List, Set
 
 from dotenv import load_dotenv
 
-from commonFunctions import connect_to_imap, extract_email_address, get_all_labels, imap_call, setup_logging
+from commonFunctions import (
+    connect_to_imap,
+    extract_email_address,
+    get_all_labels,
+    imap_call,
+    parse_headers,
+    setup_logging,
+)
 
 _PROGRESS_INTERVAL = 120
 
 log = logging.getLogger(__name__)
 
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
 
 def crawl_emails_in_label(
-    imap: imaplib.IMAP4_SSL,
+    imap,
     label: str,
     progress: Dict,
 ) -> Set[str]:
-    email_addresses = set()
+    email_addresses: Set[str] = set()
 
     try:
         status, _ = imap_call(lambda: imap.select(f'"{label}"', readonly=True))
@@ -35,14 +42,20 @@ def crawl_emails_in_label(
         total = len(message_ids)
         log.info("Label '%s': %d messages to scan", label, total)
 
+        # M1: initialise i so the post-loop log doesn't raise UnboundLocalError on empty labels
+        i = 0
         for i, msg_id in enumerate(message_ids, 1):
             try:
-                status, msg_data = imap_call(lambda: imap.fetch(msg_id, '(RFC822)'))
-                if status != 'OK':
+                # M6: fetch only the From header instead of the full RFC822 body
+                status, msg_data = imap_call(
+                    lambda mid=msg_id: imap.fetch(mid, '(BODY[HEADER.FIELDS (FROM)])')
+                )
+                if status != 'OK' or not msg_data or not msg_data[0]:
                     continue
 
-                msg = email.message_from_bytes(msg_data[0][1])
-                from_header = msg.get('From', '')
+                raw = msg_data[0][1].decode(errors='replace') if isinstance(msg_data[0][1], bytes) else ''
+                headers = parse_headers(raw)
+                from_header = headers.get('from', '')
 
                 if from_header:
                     email_addr = extract_email_address(from_header)
@@ -83,10 +96,14 @@ def _fmt_elapsed(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d}"
 
 
-def build_email_rules(imap: imaplib.IMAP4_SSL) -> Dict:
+def build_email_rules(imap) -> Dict:
     labels = get_all_labels(imap, parent_label="MailMatrixCategories")
     log.info("Found %d labels under MailMatrixCategories", len(labels))
-    rules_data = {"labels": []}
+    rules_data: Dict = {"labels": []}
+
+    # L2: track globally unique addresses so the progress counter isn't inflated
+    # by addresses that appear in multiple labels
+    global_addresses: Set[str] = set()
 
     progress = {
         'start': time.monotonic(),
@@ -100,7 +117,8 @@ def build_email_rules(imap: imaplib.IMAP4_SSL) -> Dict:
     for label in labels:
         email_addresses = crawl_emails_in_label(imap, label, progress)
         progress['labels_done'] += 1
-        progress['unique_addresses'] += len(email_addresses)
+        global_addresses |= email_addresses
+        progress['unique_addresses'] = len(global_addresses)
 
         rules_data["labels"].append({
             "labelName": label,
@@ -120,7 +138,7 @@ def build_email_rules(imap: imaplib.IMAP4_SSL) -> Dict:
     return rules_data
 
 
-def write_to_json(data: Dict, output_file: str = "emailRules.json") -> None:
+def write_to_json(data: Dict, output_file: str) -> None:
     with open(output_file, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
     log.info("Email rules written to %s", output_file)
@@ -135,13 +153,16 @@ def main() -> None:
     username = os.environ["IMAP_USERNAME"]
     password = os.environ["IMAP_PASSWORD"]
 
+    # L5: anchor output to the script's directory, not CWD
+    rules_path = os.environ.get("RULES_PATH", os.path.join(_SCRIPT_DIR, "emailRules.json"))
+
     try:
         log.info("Connecting to %s:%d ...", imap_server, imap_port)
         imap = connect_to_imap(imap_server, username, password, imap_port)
         log.info("Authenticated as %s", username)
 
         rules_data = build_email_rules(imap)
-        write_to_json(rules_data)
+        write_to_json(rules_data, rules_path)
         imap.logout()
 
     except Exception as e:

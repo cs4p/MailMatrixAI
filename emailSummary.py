@@ -7,7 +7,6 @@ import socket
 import socketserver
 import subprocess
 import sys
-import threading
 import webbrowser
 from datetime import date, datetime
 from html import escape as _e
@@ -25,11 +24,14 @@ from commonFunctions import (
     imap_call,
     imap_date,
     parse_headers,
+    rules_lock,
     setup_logging,
+    validate_email_address,
+    validate_label,
 )
 
 log = logging.getLogger(__name__)
-_rules_lock = threading.Lock()
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # ── CSS & JS as plain strings (no brace-doubling needed) ─────────────────────
 
@@ -491,6 +493,10 @@ def accept_filing(
 
     if not from_addr or not label:
         return {'ok': False, 'error': 'Missing from_addr or label'}
+    if not validate_email_address(from_addr):  # H2: reject IMAP injection chars
+        return {'ok': False, 'error': 'Invalid from_addr'}
+    if not validate_label(label):              # H3: only allow MailMatrixCategories/*
+        return {'ok': False, 'error': 'Invalid label'}
 
     # Move all INBOX messages from this sender to the label
     try:
@@ -516,7 +522,7 @@ def accept_filing(
 
     # Update emailRules.json
     try:
-        with _rules_lock:
+        with rules_lock:
             with open(rules_path, 'r', encoding='utf-8') as f:
                 rules = json.load(f)
 
@@ -591,7 +597,7 @@ def serve_report(html: str, accept_fn: Callable[[dict], dict]) -> None:
         allow_reuse_address = True
         daemon_threads = True
 
-    with _Server(('', port), Handler) as server:
+    with _Server(('127.0.0.1', port), Handler) as server:
         url = f'http://localhost:{port}'
         log.info("Report server at %s", url)
         print(f"\nReport ready at {url}")
@@ -673,7 +679,8 @@ def main() -> None:
 
     report = build_html_report(target_date, inbox_emails, filed_emails, analysis, labels)
 
-    output_dir = "emailSummary"
+    # L5: anchor output to the script's directory, not CWD
+    output_dir = os.path.join(_SCRIPT_DIR, "emailSummary")
     os.makedirs(output_dir, exist_ok=True)
     output_file = os.path.join(output_dir, f"email_summary_{target_date.strftime('%Y-%m-%d')}.html")
     with open(output_file, 'w', encoding='utf-8') as f:

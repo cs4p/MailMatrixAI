@@ -25,7 +25,7 @@
 
   (async () => {
     try {
-      const resp = await fetch('/api/inbox-analyze');
+      const resp = await fetch('/api/inbox-analyze', { headers: { 'X-Requested-With': 'XMLHttpRequest' } });
       const data = await resp.json();
       if (!resp.ok || !data.ok) {
         showError(data.error || 'Analysis failed');
@@ -161,48 +161,6 @@
       </div>`;
   }
 
-  async function handleAccept(btn) {
-    const fromAddr = btn.dataset.from;
-    const sug = btn.closest('.suggestion');
-    const select = sug.querySelector('.label-select');
-    const label = select ? select.value : btn.dataset.label;
-    btn.disabled = true;
-    btn.textContent = 'Moving…';
-    if (select) select.disabled = true;
-    try {
-      const res = await fetch('/accept', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({from_addr: fromAddr, label}),
-      });
-      const data = await res.json();
-      if (data.ok) {
-        const shortLabel = label.replace('MailMatrixCategories/', '');
-        sug.innerHTML = '<span class="accepted-msg">✓ Moved to ' + shortLabel + ' · emailRules.json updated</span>';
-      } else {
-        btn.disabled = false;
-        btn.textContent = 'Accept';
-        if (select) select.disabled = false;
-        alert('Error: ' + (data.error || 'Unknown error'));
-      }
-    } catch (err) {
-      btn.disabled = false;
-      btn.textContent = 'Accept';
-      if (select) select.disabled = false;
-      alert('Error: ' + err.message);
-    }
-  }
 
-  function esc(s) {
-    return String(s)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;');
-  }
-
-  function escAttr(s) {
-    return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;');
-  }
 </script>
 {% endblock %}

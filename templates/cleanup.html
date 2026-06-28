@@ -75,7 +75,9 @@
 
   <div class="cleanup-card-footer">
     <button class="btn btn-primary btn-sm"
-            onclick="collapseDomaim('{{ item.domain }}', {{ loop.index }}, this)">
+            data-domain="{{ item.domain }}"
+            data-idx="{{ loop.index }}"
+            onclick="collapseDomain(this)">
       Collapse into Domain Rule
     </button>
   </div>
@@ -117,7 +119,9 @@
 
   <div class="cleanup-card-footer">
     <button class="btn btn-primary btn-sm"
-            onclick="resolveDuplicate('{{ item.address }}', 'dup-{{ outer_idx }}', this)">
+            data-address="{{ item.address }}"
+            data-group-id="dup-{{ outer_idx }}"
+            onclick="resolveDuplicate(this)">
       Keep Selected &amp; Remove Others
     </button>
   </div>
@@ -132,14 +136,16 @@
 
 {% block scripts %}
 <script>
-  function collapseDomaim(domain, idx, btn) {
+  function collapseDomain(btn) {
+    const domain = btn.dataset.domain;
+    const idx = btn.dataset.idx;
     if (!confirm(`Remove all individual sender rules for *@${domain}?\n\nThe domain rule will continue to route this mail correctly.`)) return;
     btn.disabled = true;
     btn.textContent = 'Removing…';
 
     fetch('/api/cleanup/collapse-domain', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: {'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest'},
       body: JSON.stringify({domain}),
     })
       .then(r => r.json())
@@ -161,7 +167,9 @@
       });
   }
 
-  function resolveDuplicate(address, groupId, btn) {
+  function resolveDuplicate(btn) {
+    const address = btn.dataset.address;
+    const groupId = btn.dataset.groupId;
     const group = document.getElementById(groupId);
     const checked = group.querySelector('input[type=radio]:checked');
     if (!checked) { showToast('Select a label first', 'error'); return; }
@@ -174,7 +182,7 @@
 
     fetch('/api/cleanup/resolve-duplicate', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: {'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest'},
       body: JSON.stringify({address, keep_label: keepLabel}),
     })
       .then(r => r.json())
@@ -203,13 +211,6 @@
     }
   }
 
-  let toastTimer;
-  function showToast(msg, type = 'success') {
-    const el = document.getElementById('toast');
-    el.textContent = msg;
-    el.className = 'toast toast-' + type + ' toast-visible';
-    clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => { el.className = 'toast'; }, 4000);
-  }
+
 </script>
 {% endblock %}

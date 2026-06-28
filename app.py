@@ -20,7 +20,10 @@ from commonFunctions import (
     get_all_labels,
     imap_call as _imap_call,
     parse_headers,
+    rules_lock,
     setup_logging,
+    validate_email_address,
+    validate_label,
 )
 
 load_dotenv()
@@ -30,6 +33,14 @@ logging.getLogger("werkzeug").setLevel(logging.ERROR)  # our after_request hook 
 log = logging.getLogger(__name__)
 
 app = Flask(__name__)
+
+
+@app.before_request
+def _check_csrf():
+    if request.method == "POST":
+        if request.headers.get("X-Requested-With") != "XMLHttpRequest":
+            log.warning("CSRF check failed: %s %s", request.method, request.path)
+            return jsonify({"ok": False, "error": "Forbidden"}), 403
 
 
 @app.before_request
@@ -56,7 +67,6 @@ RULES_PATH = BASE_DIR / "emailRules.json"
 SUMMARY_DIR = BASE_DIR / "emailSummary"
 ENV_PATH = BASE_DIR / ".env"
 _sort_lock = threading.Lock()
-_rules_lock = threading.Lock()
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -77,11 +87,11 @@ def _inbox_count() -> int:
         if not (server and user and pw):
             return -1
         imap = connect_to_imap(server, user, pw, port)
-        imap.select("INBOX", readonly=True)
-        status, data = imap.search(None, "ALL")
+        # M7: SELECT returns the EXISTS count directly — no need for SEARCH ALL
+        status, data = imap.select("INBOX", readonly=True)
         imap.logout()
-        if status == "OK" and data[0]:
-            count = len(data[0].split())
+        if status == "OK" and data and data[0]:
+            count = int(data[0])
             log.debug("Inbox count: %d", count)
             return count
         return 0
@@ -97,12 +107,14 @@ def _full_label(name: str) -> str:
 
 
 def _save_rules(data: dict) -> None:
-    with _rules_lock:
+    with rules_lock:
         with open(RULES_PATH, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
 
 
 def _move_imap_messages(address: str, from_full_label: str, to_full_label: str) -> dict:
+    if not validate_email_address(address):  # H2: reject IMAP injection chars
+        return {"ok": False, "error": "Invalid address", "moved": 0}
     log.info("Moving messages for <%s>: %s → %s", address, from_full_label, to_full_label)
     try:
         server = os.getenv("IMAP_SERVER", "")
@@ -205,8 +217,9 @@ def summaries():
 
 @app.route("/summaries/<filename>")
 def view_summary(filename: str):
-    path = SUMMARY_DIR / filename
-    if not path.exists() or not path.suffix == ".html":
+    path = (SUMMARY_DIR / filename).resolve()
+    # M2: confirm the resolved path is actually inside SUMMARY_DIR
+    if not path.is_relative_to(SUMMARY_DIR.resolve()) or path.suffix != ".html" or not path.exists():
         return "Not found", 404
     # Serve the HTML file; Accept buttons POST to /accept on the app server
     return send_file(path, mimetype="text/html")
@@ -342,6 +355,10 @@ def api_generate_summary():
 @app.route("/accept", methods=["POST"])
 def accept():
     body = request.get_json(force=True)
+    # H3: validate label before passing to accept_filing
+    label = (body.get("label") or "").strip()
+    if not validate_label(label):
+        return jsonify({"ok": False, "error": "Invalid label"}), 400
     result = accept_filing(
         body=body,
         imap_server=os.getenv("IMAP_SERVER", ""),
@@ -435,6 +452,8 @@ def api_rules_update_sender():
 
     if not address or not old_full_label or not new_label_input:
         return jsonify({"ok": False, "error": "Missing required fields"}), 400
+    if not validate_label(new_full_label):  # M9: reject malformed or traversal labels
+        return jsonify({"ok": False, "error": "Invalid label name"}), 400
 
     data = _load_rules()
 
@@ -609,6 +628,14 @@ def api_cleanup_collapse_domain():
         return jsonify({"ok": False, "error": "Missing domain"}), 400
 
     data = _load_rules()
+    # M8: refuse to collapse if there's no domain rule to take over routing
+    has_domain_rule = any(
+        domain in entry.get("emailDomains", [])
+        for entry in data.get("labels", [])
+    )
+    if not has_domain_rule:
+        return jsonify({"ok": False, "error": f"No domain rule found for @{domain}"}), 400
+
     removed = 0
     for entry in data.get("labels", []):
         addrs = entry.get("emailAddresses", [])

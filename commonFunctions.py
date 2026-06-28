@@ -1,6 +1,8 @@
 import imaplib
 import logging
 import random
+import re
+import threading
 import time
 from datetime import date
 from email.header import decode_header as _decode_header
@@ -9,6 +11,12 @@ from typing import Callable, List, Optional
 _RATE_LIMIT_PHRASES = ('throttl', 'rate limit', 'too many', 'overquota', 'slow down')
 _MAX_RETRIES = 5
 _BASE_DELAY = 2.0
+
+# Shared lock so app.py and emailSummary.py both protect emailRules.json (H6)
+rules_lock = threading.Lock()
+
+# Compiled once for get_all_labels — handles quoted and unquoted mailbox names (L9)
+_LIST_RE = re.compile(rb'\([^)]*\) "([^"]*)" "?([^"]*)"?')
 
 log = logging.getLogger(__name__)
 
@@ -19,6 +27,31 @@ def setup_logging(log_file: str) -> None:
         format='%(asctime)s  %(levelname)-8s  %(message)s',
         datefmt='%H:%M:%S',
         handlers=[logging.StreamHandler(), logging.FileHandler(log_file)],
+    )
+
+
+def validate_email_address(addr: str) -> bool:
+    """Return True iff addr looks like an email and contains no IMAP injection chars."""
+    return bool(
+        addr
+        and '@' in addr
+        and '"' not in addr
+        and '\\' not in addr
+        and '\n' not in addr
+        and '\r' not in addr
+    )
+
+
+def validate_label(label: str) -> bool:
+    """Return True iff label is a safe MailMatrixCategories/ label with no traversal."""
+    return bool(
+        label
+        and label.startswith('MailMatrixCategories/')
+        and len(label) > len('MailMatrixCategories/')
+        and '..' not in label
+        and '"' not in label
+        and '\n' not in label
+        and '\r' not in label
     )
 
 
@@ -66,7 +99,12 @@ def get_all_labels(imap: imaplib.IMAP4_SSL, parent_label: Optional[str] = None) 
     prefix = f"{parent_label}/" if parent_label else None
     labels = []
     for folder in folders:
-        folder_name = folder.decode().split(' "/" ')[-1].strip('"')
+        if not isinstance(folder, bytes):
+            continue
+        m = _LIST_RE.search(folder)
+        if not m:
+            continue
+        folder_name = m.group(2).decode(errors='replace').strip('"')
         if prefix is None or folder_name.startswith(prefix):
             labels.append(folder_name)
     return sorted(labels)

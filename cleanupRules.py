@@ -19,11 +19,9 @@ from dotenv import load_dotenv
 
 from commonFunctions import setup_logging
 
-load_dotenv()
-
 log = logging.getLogger(__name__)
 
-RULES_PATH = os.environ.get("RULES_PATH", "emailRules.json")
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _W = 66
 
 
@@ -196,13 +194,19 @@ def handle_duplicate_addresses(rules: dict, items: List[dict]) -> int:
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
+    load_dotenv()
     setup_logging("cleanup_rules.log")
 
-    if not os.path.exists(RULES_PATH):
-        print(f"Error: {RULES_PATH} not found. Run emailRulesInit.py first.")
+    # L4/L5: resolve path here (not at import time) and anchor to script dir
+    rules_path = os.environ.get(
+        "RULES_PATH", os.path.join(_SCRIPT_DIR, "emailRules.json")
+    )
+
+    if not os.path.exists(rules_path):
+        print(f"Error: {rules_path} not found. Run emailRulesInit.py first.")
         sys.exit(1)
 
-    rules = load_rules(RULES_PATH)
+    rules = load_rules(rules_path)
     collapses = find_domain_collapsible(rules)
     duplicates = find_duplicate_addresses(rules)
 
@@ -233,8 +237,8 @@ def main() -> None:
     print()
     _hr("═")
     if total_changes > 0:
-        save_rules(rules, RULES_PATH)
-        print(f"\n  {total_changes} change(s) saved to {RULES_PATH}")
+        save_rules(rules, rules_path)
+        print(f"\n  {total_changes} change(s) saved to {rules_path}")
     else:
         print("\n  No changes made.")
     _hr("═")

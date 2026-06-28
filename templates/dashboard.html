@@ -114,7 +114,7 @@
     btn.innerHTML = '<span class="btn-icon">↓</span> Sorting…';
     const entry = addActivity('Sorting inbox…', 'pending');
 
-    fetch('/api/sort', { method: 'POST' })
+    fetch('/api/sort', { method: 'POST', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
       .then(r => r.json())
       .then(data => {
         if (data.ok) {
@@ -125,7 +125,9 @@
           });
         } else {
           entry.className = 'activity-entry error';
-          entry.innerHTML = entry.innerHTML.replace('Sorting inbox…', '✗ Sort failed: ' + (data.error || 'Unknown').split('\n')[0]);
+          // M3: escape server error text before injecting into innerHTML
+          const errText = esc((data.error || 'Unknown').split('\n')[0]);
+          entry.innerHTML = entry.innerHTML.replace('Sorting inbox…', '✗ Sort failed: ' + errText);
         }
       })
       .catch(() => {
@@ -144,7 +146,7 @@
 
     fetch('/api/generate-summary', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
       body: JSON.stringify({ date: dateStr }),
     })
       .then(r => r.json())
@@ -172,7 +174,8 @@
           }
         } else {
           entry.className = 'activity-entry error';
-          const errMsg = (data.error || 'Unknown error').split('\n').pop().trim() || data.error;
+          // M3: escape server error text before injecting into innerHTML
+          const errMsg = esc((data.error || 'Unknown error').split('\n').pop().trim() || data.error);
           entry.innerHTML = entry.innerHTML.replace(
             `Generating summary for ${dateStr}…`,
             `✗ ${errMsg}`

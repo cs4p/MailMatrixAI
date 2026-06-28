@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -46,6 +47,7 @@ def client(tmp_path):
         patch.object(flask_app_module, "ENV_PATH", env_file),
     ):
         with flask_app.test_client() as c:
+            c.environ_base['HTTP_X_REQUESTED_WITH'] = 'XMLHttpRequest'
             yield c
 
 
@@ -117,7 +119,7 @@ def test_api_inbox_stats_returns_count_with_mock_imap(client, mock_imap):
         resp = client.get("/api/inbox-stats")
     data = resp.get_json()
     assert data["connected"] is True
-    assert data["inbox_count"] == 3  # "1 2 3".split() has 3 ids
+    assert data["inbox_count"] == 5  # mock SELECT returns ("OK", [b"5"])
 
 
 # ── /api/sort ────────────────────────────────────────────────────────────────
@@ -196,7 +198,7 @@ def test_api_generate_summary_no_date_uses_today(client):
     # Should not have a date arg appended (only "--no-serve")
     call_args = mock_run.call_args[0][0]
     assert "--no-serve" in call_args
-    assert "2026" not in call_args  # no date arg was added
+    assert not any(re.match(r'\d{4}-\d{2}-\d{2}$', str(a)) for a in call_args)
 
 
 # ── /api/rules/delete ─────────────────────────────────────────────────────────
@@ -214,11 +216,6 @@ def test_api_rules_delete_sender(client, tmp_path):
     assert resp.get_json()["ok"] is True
 
     # Verify it was actually removed
-    with patch.object(flask_app_module, "RULES_PATH"):
-        flask_app_module.RULES_PATH = (
-            next(p for p in [flask_app_module.RULES_PATH] if True)
-        )
-    # Read current rules via the load helper
     data = flask_app_module._load_rules()
     work = next(e for e in data["labels"] if e["labelName"] == "MailMatrixCategories/Work")
     assert "boss@work.com" not in work["emailAddresses"]
