@@ -4,7 +4,7 @@
 {% block content %}
 <div class="page-header">
   <h1>Configuration</h1>
-  <p class="page-subtitle">IMAP and API credentials stored in your .env file</p>
+  <p class="page-subtitle">IMAP and API credentials stored in macOS Keychain</p>
 </div>
 
 <div class="card config-card">
@@ -65,7 +65,7 @@
 
     fetch('/api/config', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: {'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest'},
       body: JSON.stringify(data),
     })
       .then(r => r.json())

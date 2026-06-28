@@ -410,6 +410,16 @@ def test_api_config_ignores_disallowed_keys(client):
     assert "DANGEROUS_KEY" not in os.environ
 
 
+def test_api_config_rejected_without_csrf_header(client):
+    resp = client.post(
+        "/api/config",
+        data=json.dumps({"IMAP_SERVER": "imap.example.com"}),
+        content_type="application/json",
+        headers={"X-Requested-With": ""},  # override the fixture's default
+    )
+    assert resp.status_code == 403
+
+
 # ── /cleanup page ─────────────────────────────────────────────────────────────
 
 def test_cleanup_page_returns_200(client):
