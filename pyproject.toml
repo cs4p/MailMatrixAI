@@ -3,13 +3,16 @@ name = "mailmatrixai"
 version = "0.1.0"
 requires-python = ">=3.9"
 dependencies = [
-    "python-dotenv>=1.0",
+    "python-dotenv>=1.2.2",
     "anthropic>=0.50.0",
     "flask>=3.0",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "httpx>=0.27"]
+dev = ["pytest>=9.0.3", "httpx>=0.27"]
+
+[tool.setuptools]
+py-modules = ["app", "commonFunctions", "emailRulesInit", "sortEmail", "emailSummary", "cleanupRules"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
