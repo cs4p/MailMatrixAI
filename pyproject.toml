@@ -6,6 +6,7 @@ dependencies = [
     "python-dotenv>=1.2.2",
     "anthropic>=0.50.0",
     "flask>=3.0",
+    "keyring>=25.0",
 ]
 
 [project.optional-dependencies]

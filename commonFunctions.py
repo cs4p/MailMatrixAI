@@ -1,5 +1,6 @@
 import imaplib
 import logging
+import os
 import random
 import re
 import threading
@@ -7,6 +8,10 @@ import time
 from datetime import date
 from email.header import decode_header as _decode_header
 from typing import Callable, List, Optional
+
+import keyring
+
+KEYCHAIN_SERVICE = "MailMatrixAI"
 
 _RATE_LIMIT_PHRASES = ('throttl', 'rate limit', 'too many', 'overquota', 'slow down')
 _MAX_RETRIES = 5
@@ -19,6 +24,20 @@ rules_lock = threading.Lock()
 _LIST_RE = re.compile(rb'\([^)]*\) "([^"]*)" "?([^"]*)"?')
 
 log = logging.getLogger(__name__)
+
+
+def get_credential(key: str, default: str = "") -> str:
+    """Return a credential from macOS Keychain, falling back to os.environ."""
+    val = keyring.get_password(KEYCHAIN_SERVICE, key)
+    if val is not None:
+        return val
+    return os.environ.get(key, default)
+
+
+def set_credential(key: str, value: str) -> None:
+    """Write a credential to macOS Keychain and keep os.environ in sync."""
+    keyring.set_password(KEYCHAIN_SERVICE, key, value)
+    os.environ[key] = value
 
 
 def setup_logging(log_file: str) -> None:

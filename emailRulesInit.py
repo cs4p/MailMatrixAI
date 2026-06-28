@@ -1,15 +1,15 @@
 import json
 import logging
 import os
+import sys
 import time
 from typing import Dict, List, Set
-
-from dotenv import load_dotenv
 
 from commonFunctions import (
     connect_to_imap,
     extract_email_address,
     get_all_labels,
+    get_credential,
     imap_call,
     parse_headers,
     setup_logging,
@@ -145,13 +145,15 @@ def write_to_json(data: Dict, output_file: str) -> None:
 
 
 def main() -> None:
-    load_dotenv()
     setup_logging('email_rules.log')
 
-    imap_server = os.environ["IMAP_SERVER"]
-    imap_port = int(os.environ.get("IMAP_PORT", "993"))
-    username = os.environ["IMAP_USERNAME"]
-    password = os.environ["IMAP_PASSWORD"]
+    imap_server = get_credential("IMAP_SERVER")
+    imap_port = int(get_credential("IMAP_PORT", "993"))
+    username = get_credential("IMAP_USERNAME")
+    password = get_credential("IMAP_PASSWORD")
+    if not (imap_server and username and password):
+        log.error("IMAP credentials not configured — set them via the web UI Config page")
+        sys.exit(1)
 
     # L5: anchor output to the script's directory, not CWD
     rules_path = os.environ.get("RULES_PATH", os.path.join(_SCRIPT_DIR, "emailRules.json"))

@@ -15,8 +15,6 @@ import sys
 from collections import defaultdict
 from typing import Dict, List
 
-from dotenv import load_dotenv
-
 from commonFunctions import setup_logging
 
 log = logging.getLogger(__name__)
@@ -194,7 +192,6 @@ def handle_duplicate_addresses(rules: dict, items: List[dict]) -> int:
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
-    load_dotenv()
     setup_logging("cleanup_rules.log")
 
     # L4/L5: resolve path here (not at import time) and anchor to script dir

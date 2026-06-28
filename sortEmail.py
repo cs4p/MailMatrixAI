@@ -2,12 +2,11 @@ import imaplib
 import json
 import logging
 import os
+import sys
 from collections import defaultdict
 from typing import Dict, List, Set, Tuple
 
-from dotenv import load_dotenv
-
-from commonFunctions import connect_to_imap, extract_email_address, imap_call, setup_logging
+from commonFunctions import connect_to_imap, extract_email_address, get_credential, imap_call, setup_logging
 
 log = logging.getLogger(__name__)
 
@@ -107,14 +106,16 @@ def sort_inbox(
 
 
 def main() -> None:
-    load_dotenv()
     setup_logging('sort_email.log')
 
-    imap_server = os.environ["IMAP_SERVER"]
-    imap_port = int(os.environ.get("IMAP_PORT", "993"))
-    username = os.environ["IMAP_USERNAME"]
-    password = os.environ["IMAP_PASSWORD"]
+    imap_server = get_credential("IMAP_SERVER")
+    imap_port = int(get_credential("IMAP_PORT", "993"))
+    username = get_credential("IMAP_USERNAME")
+    password = get_credential("IMAP_PASSWORD")
     rules_path = os.environ.get("RULES_PATH", "emailRules.json")
+    if not (imap_server and username and password):
+        log.error("IMAP credentials not configured — set them via the web UI Config page")
+        sys.exit(1)
 
     log.info("Loading rules from %s", rules_path)
     email_to_labels, domain_to_labels = load_rules(rules_path)

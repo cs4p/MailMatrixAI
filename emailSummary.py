@@ -14,13 +14,12 @@ from http.server import BaseHTTPRequestHandler
 from typing import Callable, Dict, List, Optional
 
 import anthropic
-from dotenv import load_dotenv
-
 from commonFunctions import (
     connect_to_imap,
     decode_header_value,
     extract_email_address,
     get_all_labels,
+    get_credential,
     imap_call,
     imap_date,
     parse_headers,
@@ -236,7 +235,7 @@ def analyze_with_claude(inbox_emails: List[dict], available_labels: List[str]) -
     if not inbox_emails:
         return {'action_required': [], 'filing_suggestions': []}
 
-    client = anthropic.Anthropic()
+    client = anthropic.Anthropic(api_key=get_credential("ANTHROPIC_API_KEY"))
 
     emails_text = ''
     for i, em in enumerate(inbox_emails, 1):
@@ -301,9 +300,9 @@ Rules:
         ) as stream:
             response = stream.get_final_message()
     except anthropic.AuthenticationError:
-        log.error("Anthropic API key is invalid — check ANTHROPIC_API_KEY in .env")
+        log.error("Anthropic API key is invalid — check ANTHROPIC_API_KEY in macOS Keychain")
         return {'action_required': [], 'filing_suggestions': [],
-                '_error': 'Invalid API key — check ANTHROPIC_API_KEY in .env'}
+                '_error': 'Invalid API key — check ANTHROPIC_API_KEY in macOS Keychain'}
     except anthropic.APIStatusError as exc:
         if exc.status_code == 402:
             log.error("Anthropic account has no remaining credits — skipping AI analysis")
@@ -612,7 +611,6 @@ def serve_report(html: str, accept_fn: Callable[[dict], dict]) -> None:
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main() -> None:
-    load_dotenv()
     setup_logging('email_summary.log')
 
     args = [a for a in sys.argv[1:] if not a.startswith('--')]
@@ -645,11 +643,14 @@ def main() -> None:
             sort_result.stderr[-500:],
         )
 
-    imap_server = os.environ["IMAP_SERVER"]
-    imap_port = int(os.environ.get("IMAP_PORT", "993"))
-    username = os.environ["IMAP_USERNAME"]
-    password = os.environ["IMAP_PASSWORD"]
-    rules_path = os.environ.get("RULES_PATH", "emailRules.json")
+    imap_server = get_credential("IMAP_SERVER")
+    imap_port = int(get_credential("IMAP_PORT", "993"))
+    username = get_credential("IMAP_USERNAME")
+    password = get_credential("IMAP_PASSWORD")
+    rules_path = os.environ.get("RULES_PATH", os.path.join(_SCRIPT_DIR, "emailRules.json"))
+    if not (imap_server and username and password):
+        log.error("IMAP credentials not configured — set them via the web UI Config page")
+        sys.exit(1)
 
     log.info("Connecting to %s:%d ...", imap_server, imap_port)
     imap = connect_to_imap(imap_server, username, password, imap_port)

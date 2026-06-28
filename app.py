@@ -9,24 +9,27 @@ import time
 from datetime import date, timedelta
 from pathlib import Path
 
-from dotenv import load_dotenv, set_key
+from dotenv import load_dotenv, dotenv_values
 from flask import Flask, g, jsonify, redirect, render_template, request, send_file, url_for
 
 from emailSummary import accept_filing, analyze_with_claude, deduplicate_inbox_emails
 from cleanupRules import find_domain_collapsible, find_duplicate_addresses
 from commonFunctions import (
+    KEYCHAIN_SERVICE,
     connect_to_imap,
     extract_email_address,
     get_all_labels,
+    get_credential,
     imap_call as _imap_call,
     parse_headers,
     rules_lock,
+    set_credential,
     setup_logging,
     validate_email_address,
     validate_label,
 )
 
-load_dotenv()
+load_dotenv()  # kept for .env → Keychain migration only (see _migrate_env_to_keychain)
 setup_logging("app.log")
 logging.getLogger("werkzeug").setLevel(logging.ERROR)  # our after_request hook handles request logs
 
@@ -67,6 +70,31 @@ RULES_PATH = BASE_DIR / "emailRules.json"
 SUMMARY_DIR = BASE_DIR / "emailSummary"
 ENV_PATH = BASE_DIR / ".env"
 _sort_lock = threading.Lock()
+_CREDENTIAL_KEYS = {"IMAP_SERVER", "IMAP_PORT", "IMAP_USERNAME", "IMAP_PASSWORD", "ANTHROPIC_API_KEY"}
+
+
+def _migrate_env_to_keychain() -> None:
+    """One-time migration: copy .env credentials to macOS Keychain on first run."""
+    if not ENV_PATH.exists():
+        return
+    try:
+        import keyring as _kr
+        values = dotenv_values(str(ENV_PATH))
+        migrated = []
+        for key in _CREDENTIAL_KEYS:
+            val = (values.get(key) or "").strip()
+            if val and _kr.get_password(KEYCHAIN_SERVICE, key) is None:
+                set_credential(key, val)
+                migrated.append(key)
+        if migrated:
+            log.info("Migrated %d credential(s) from .env to macOS Keychain: %s",
+                     len(migrated), ", ".join(sorted(migrated)))
+            log.info("You may now delete .env — credentials are stored in macOS Keychain.")
+    except Exception as exc:
+        log.warning("Could not migrate .env to Keychain: %s", exc)
+
+
+_migrate_env_to_keychain()
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -80,10 +108,10 @@ def _load_rules() -> dict:
 
 def _inbox_count() -> int:
     try:
-        server = os.getenv("IMAP_SERVER", "")
-        user = os.getenv("IMAP_USERNAME", "")
-        pw = os.getenv("IMAP_PASSWORD", "")
-        port = int(os.getenv("IMAP_PORT", 993))
+        server = get_credential("IMAP_SERVER")
+        user = get_credential("IMAP_USERNAME")
+        pw = get_credential("IMAP_PASSWORD")
+        port = int(get_credential("IMAP_PORT", "993"))
         if not (server and user and pw):
             return -1
         imap = connect_to_imap(server, user, pw, port)
@@ -290,11 +318,11 @@ def rules():
 @app.route("/config")
 def config():
     cfg = {
-        "IMAP_SERVER": os.getenv("IMAP_SERVER", ""),
-        "IMAP_PORT": os.getenv("IMAP_PORT", "993"),
-        "IMAP_USERNAME": os.getenv("IMAP_USERNAME", ""),
-        "IMAP_PASSWORD": os.getenv("IMAP_PASSWORD", ""),
-        "ANTHROPIC_API_KEY": os.getenv("ANTHROPIC_API_KEY", ""),
+        "IMAP_SERVER": get_credential("IMAP_SERVER"),
+        "IMAP_PORT": get_credential("IMAP_PORT", "993"),
+        "IMAP_USERNAME": get_credential("IMAP_USERNAME"),
+        "IMAP_PASSWORD": get_credential("IMAP_PASSWORD"),
+        "ANTHROPIC_API_KEY": get_credential("ANTHROPIC_API_KEY"),
     }
     return render_template("config.html", cfg=cfg)
 
@@ -361,10 +389,10 @@ def accept():
         return jsonify({"ok": False, "error": "Invalid label"}), 400
     result = accept_filing(
         body=body,
-        imap_server=os.getenv("IMAP_SERVER", ""),
-        imap_port=int(os.getenv("IMAP_PORT", 993)),
-        username=os.getenv("IMAP_USERNAME", ""),
-        password=os.getenv("IMAP_PASSWORD", ""),
+        imap_server=get_credential("IMAP_SERVER"),
+        imap_port=int(get_credential("IMAP_PORT", "993")),
+        username=get_credential("IMAP_USERNAME"),
+        password=get_credential("IMAP_PASSWORD"),
         rules_path=str(RULES_PATH),
     )
     return jsonify(result)
@@ -373,15 +401,10 @@ def accept():
 @app.route("/api/config", methods=["POST"])
 def api_config():
     data = request.get_json(force=True)
-    allowed = {"IMAP_SERVER", "IMAP_PORT", "IMAP_USERNAME", "IMAP_PASSWORD", "ANTHROPIC_API_KEY"}
-    env_file = str(ENV_PATH)
-    if not ENV_PATH.exists():
-        ENV_PATH.write_text("")
     updated = []
     for key, val in data.items():
-        if key in allowed and val is not None:
-            set_key(env_file, key, str(val))
-            os.environ[key] = str(val)
+        if key in _CREDENTIAL_KEYS and val is not None:
+            set_credential(key, str(val))
             updated.append(key)
     if updated:
         log.info("Config updated: %s", ", ".join(sorted(updated)))
@@ -390,10 +413,10 @@ def api_config():
 
 @app.route("/api/test-connection")
 def api_test_connection():
-    server = os.getenv("IMAP_SERVER", "")
-    user = os.getenv("IMAP_USERNAME", "")
-    pw = os.getenv("IMAP_PASSWORD", "")
-    port = int(os.getenv("IMAP_PORT", 993))
+    server = get_credential("IMAP_SERVER")
+    user = get_credential("IMAP_USERNAME")
+    pw = get_credential("IMAP_PASSWORD")
+    port = int(get_credential("IMAP_PORT", "993"))
     if not (server and user and pw):
         log.warning("Test connection failed: credentials not configured")
         return jsonify({"ok": False, "error": "IMAP credentials not configured"})
@@ -529,10 +552,10 @@ def inbox():
 
 def _analyze_inbox() -> dict:
     """Fetch all current INBOX messages, call Claude, return analysis JSON."""
-    server = os.getenv("IMAP_SERVER", "")
-    user = os.getenv("IMAP_USERNAME", "")
-    pw = os.getenv("IMAP_PASSWORD", "")
-    port = int(os.getenv("IMAP_PORT", 993))
+    server = get_credential("IMAP_SERVER")
+    user = get_credential("IMAP_USERNAME")
+    pw = get_credential("IMAP_PASSWORD")
+    port = int(get_credential("IMAP_PORT", "993"))
     if not (server and user and pw):
         return {"ok": False, "error": "IMAP credentials not configured"}
 
