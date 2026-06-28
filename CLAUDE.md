@@ -10,6 +10,20 @@ MailMatrixAI is a Gmail management pipeline with a Flask web UI and three CLI sc
 2. **`sortEmail.py`** — reads `emailRules.json` and files INBOX messages into their matching labels (then removes them from INBOX)
 3. **`emailSummary.py`** — generates a daily markdown report: action-required messages, unmatched INBOX emails with Claude-suggested labels, and a list of what was filed where
 
+## Testing
+
+Always add tests when adding new code. Run the suite with:
+
+```bash
+python -m pytest
+```
+
+Tests live in `tests/`. Key patterns:
+- **IMAP mocks**: every IMAP method must return a 2-tuple `("OK", data)` — the `imap_call` wrapper unpacks this. Use `MagicMock()` with explicit `return_value` assignments per method.
+- **Flask tests**: use `client` fixture from `test_app.py` which patches `RULES_PATH`, `SUMMARY_DIR`, and `ENV_PATH` to tmp paths so tests never touch real files.
+- **Anthropic mock**: `client.messages.stream(...)` is a context manager — mock via `mock_cm.__enter__.return_value = mock_stream`.
+- New Flask routes → tests in `tests/test_app.py`. New script functions → tests in the matching `tests/test_<script>.py`.
+
 ## Development Setup
 
 ```bash

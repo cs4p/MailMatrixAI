@@ -1,0 +1,215 @@
+{% extends "base.html" %}
+{% block title %}Cleanup — MailMatrix AI{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Rules Cleanup</h1>
+  <p class="page-subtitle">
+    {% set total = collapses|length + duplicates|length %}
+    {% if total %}
+      {{ collapses|length }} domain collapse opportunit{{ 'y' if collapses|length == 1 else 'ies' }},
+      {{ duplicates|length }} duplicate address{{ '' if duplicates|length == 1 else 'es' }}
+    {% else %}
+      Your rules look clean — nothing to do.
+    {% endif %}
+  </p>
+</div>
+
+{% if not collapses and not duplicates %}
+<div class="card cleanup-empty">
+  <div class="cleanup-empty-icon">✓</div>
+  <div class="cleanup-empty-text">No optimizations found</div>
+  <div class="cleanup-empty-sub">All sender rules are consistent with your domain rules and each address appears in exactly one label.</div>
+</div>
+
+{% else %}
+
+{# ── Domain collapses ──────────────────────────────────────────────────────── #}
+{% if collapses %}
+<div class="cleanup-section-header">
+  <h2 class="cleanup-section-title">Domain Collapse Opportunities</h2>
+  <p class="cleanup-section-desc">
+    These individual sender rules are already covered by a domain rule and can be removed.
+    Addresses that currently route to a <em>different</em> label will be redirected to the domain rule's label after removal.
+  </p>
+</div>
+
+{% for item in collapses %}
+<div class="card cleanup-card" id="collapse-{{ loop.index }}">
+  <div class="cleanup-card-header">
+    <div>
+      <span class="cleanup-domain">*@{{ item.domain }}</span>
+      <span class="cleanup-arrow">→</span>
+      {% for rl in item.rule_labels %}
+      <span class="cleanup-label-chip">{{ rl.replace('MailMatrixCategories/', '') }}</span>
+      {% endfor %}
+    </div>
+    <span class="cleanup-count">{{ item.collapsible|length }} rule{{ '' if item.collapsible|length == 1 else 's' }}</span>
+  </div>
+
+  <table class="cleanup-table">
+    <tbody>
+      {% for c in item.collapsible %}
+      {% set same = c.label in item.rule_labels %}
+      <tr class="{{ '' if same else 'cleanup-row-warn' }}">
+        <td class="cleanup-addr">{{ c.address }}</td>
+        <td class="cleanup-from-label">{{ c.label.replace('MailMatrixCategories/', '') }}</td>
+        {% if not same %}
+        <td class="cleanup-warn-badge">different label</td>
+        {% else %}
+        <td></td>
+        {% endif %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  {% set cross_label = item.collapsible | rejectattr('label', 'in', item.rule_labels) | list %}
+  {% if cross_label %}
+  <div class="cleanup-warning">
+    Addresses marked <strong>different label</strong> will be redirected to
+    <strong>{{ item.rule_labels | map('replace', 'MailMatrixCategories/', '') | join(', ') }}</strong>
+    after removal.
+  </div>
+  {% endif %}
+
+  <div class="cleanup-card-footer">
+    <button class="btn btn-primary btn-sm"
+            onclick="collapseDomaim('{{ item.domain }}', {{ loop.index }}, this)">
+      Collapse into Domain Rule
+    </button>
+  </div>
+</div>
+{% endfor %}
+{% endif %}
+
+{# ── Duplicate addresses ───────────────────────────────────────────────────── #}
+{% if duplicates %}
+<div class="cleanup-section-header" style="margin-top: 2rem">
+  <h2 class="cleanup-section-title">Duplicate Address Rules</h2>
+  <p class="cleanup-section-desc">
+    These addresses appear under more than one label. Select the label to keep — the others will be removed.
+  </p>
+</div>
+
+{% for item in duplicates %}
+{% set outer_idx = loop.index %}
+<div class="card cleanup-card" id="dup-{{ outer_idx }}">
+  <div class="cleanup-card-header">
+    <span class="cleanup-domain">{{ item.address }}</span>
+    <span class="cleanup-count">{{ item.labels|length }} labels</span>
+  </div>
+
+  <div class="cleanup-radio-group">
+    {% for lbl in item.labels %}
+    <label class="cleanup-radio-label">
+      <input type="radio"
+             name="dup-{{ outer_idx }}-label"
+             value="{{ lbl }}"
+             {% if loop.first %}checked{% endif %}>
+      <span class="cleanup-radio-text">
+        <span class="cleanup-label-chip">{{ lbl.replace('MailMatrixCategories/', '') }}</span>
+        <span class="cleanup-label-full">{{ lbl }}</span>
+      </span>
+    </label>
+    {% endfor %}
+  </div>
+
+  <div class="cleanup-card-footer">
+    <button class="btn btn-primary btn-sm"
+            onclick="resolveDuplicate('{{ item.address }}', 'dup-{{ outer_idx }}', this)">
+      Keep Selected &amp; Remove Others
+    </button>
+  </div>
+</div>
+{% endfor %}
+{% endif %}
+
+{% endif %}{# end if any items #}
+
+<div id="toast" class="toast" aria-live="polite"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  function collapseDomaim(domain, idx, btn) {
+    if (!confirm(`Remove all individual sender rules for *@${domain}?\n\nThe domain rule will continue to route this mail correctly.`)) return;
+    btn.disabled = true;
+    btn.textContent = 'Removing…';
+
+    fetch('/api/cleanup/collapse-domain', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({domain}),
+    })
+      .then(r => r.json())
+      .then(data => {
+        if (data.ok) {
+          document.getElementById('collapse-' + idx)?.remove();
+          showToast(`Removed ${data.removed} sender rule(s) for *@${domain}`, 'success');
+          checkEmpty();
+        } else {
+          btn.disabled = false;
+          btn.textContent = 'Collapse into Domain Rule';
+          showToast('Error: ' + (data.error || 'Unknown'), 'error');
+        }
+      })
+      .catch(() => {
+        btn.disabled = false;
+        btn.textContent = 'Collapse into Domain Rule';
+        showToast('Request failed', 'error');
+      });
+  }
+
+  function resolveDuplicate(address, groupId, btn) {
+    const group = document.getElementById(groupId);
+    const checked = group.querySelector('input[type=radio]:checked');
+    if (!checked) { showToast('Select a label first', 'error'); return; }
+    const keepLabel = checked.value;
+    const shortLabel = keepLabel.replace('MailMatrixCategories/', '');
+
+    if (!confirm(`Keep "${address}" only in ${shortLabel}?\n\nIt will be removed from all other labels.`)) return;
+    btn.disabled = true;
+    btn.textContent = 'Saving…';
+
+    fetch('/api/cleanup/resolve-duplicate', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({address, keep_label: keepLabel}),
+    })
+      .then(r => r.json())
+      .then(data => {
+        if (data.ok) {
+          group.remove();
+          showToast(`${address} → ${shortLabel} (removed from ${data.removed} other label(s))`, 'success');
+          checkEmpty();
+        } else {
+          btn.disabled = false;
+          btn.textContent = 'Keep Selected & Remove Others';
+          showToast('Error: ' + (data.error || 'Unknown'), 'error');
+        }
+      })
+      .catch(() => {
+        btn.disabled = false;
+        btn.textContent = 'Keep Selected & Remove Others';
+        showToast('Request failed', 'error');
+      });
+  }
+
+  function checkEmpty() {
+    const remaining = document.querySelectorAll('.cleanup-card');
+    if (remaining.length === 0) {
+      document.querySelector('.page-subtitle').textContent = 'Your rules look clean — nothing to do.';
+    }
+  }
+
+  let toastTimer;
+  function showToast(msg, type = 'success') {
+    const el = document.getElementById('toast');
+    el.textContent = msg;
+    el.className = 'toast toast-' + type + ' toast-visible';
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { el.className = 'toast'; }, 4000);
+  }
+</script>
+{% endblock %}

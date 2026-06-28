@@ -1,0 +1,208 @@
+{% extends "base.html" %}
+{% block title %}Inbox — MailMatrix AI{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Inbox Recommendations</h1>
+  <p class="page-subtitle" id="inbox-subtitle">Fetching inbox and calling Claude…</p>
+</div>
+
+<div id="inbox-loading" class="card inbox-loading-card">
+  <div class="inbox-spinner"></div>
+  <div class="inbox-loading-text">Analyzing your inbox — this takes about 30 seconds</div>
+</div>
+
+<div id="inbox-error" class="card" style="display:none">
+  <div class="error-note" id="inbox-error-msg"></div>
+</div>
+
+<div id="inbox-results" style="display:none"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  let _analysisData = null;
+
+  (async () => {
+    try {
+      const resp = await fetch('/api/inbox-analyze');
+      const data = await resp.json();
+      if (!resp.ok || !data.ok) {
+        showError(data.error || 'Analysis failed');
+        return;
+      }
+      _analysisData = data;
+      renderResults(data);
+    } catch (err) {
+      showError(err.message);
+    }
+  })();
+
+  function showError(msg) {
+    document.getElementById('inbox-loading').style.display = 'none';
+    document.getElementById('inbox-error').style.display = '';
+    document.getElementById('inbox-error-msg').textContent = 'Error: ' + msg;
+    document.getElementById('inbox-subtitle').textContent = 'Analysis failed';
+  }
+
+  function renderResults(data) {
+    document.getElementById('inbox-loading').style.display = 'none';
+
+    const emails = data.emails || [];
+    const actionRequired = data.action_required || [];
+    const suggestions = {};
+    (data.filing_suggestions || []).forEach(s => { suggestions[s.index] = s; });
+    const labels = data.labels || [];
+
+    const totalNeedAttention = actionRequired.length;
+    document.getElementById('inbox-subtitle').textContent =
+      emails.length === 0
+        ? 'Your inbox is empty'
+        : `${emails.length} sender${emails.length === 1 ? '' : 's'} · ${totalNeedAttention} need${totalNeedAttention === 1 ? 's' : ''} attention`;
+
+    let html = renderStatsBar(emails, actionRequired);
+
+    if (data.error) {
+      html += `<div class="card" style="margin-bottom:1rem">
+        <div class="error-note">AI analysis unavailable: ${esc(data.error)}</div>
+      </div>`;
+    }
+
+    if (actionRequired.length) {
+      html += renderActionSection(actionRequired);
+    }
+
+    html += renderSuggestionsSection(emails, suggestions, labels);
+
+    const container = document.getElementById('inbox-results');
+    container.innerHTML = html;
+    container.style.display = '';
+  }
+
+  function renderStatsBar(emails, actionRequired) {
+    const totalMessages = emails.reduce((n, e) => n + (e.count || 1), 0);
+    return `
+      <div class="stat-bar">
+        <div class="stat">
+          <div class="stat-num">${totalMessages}</div>
+          <div class="stat-label">Messages</div>
+        </div>
+        <div class="stat">
+          <div class="stat-num">${emails.length}</div>
+          <div class="stat-label">Senders</div>
+        </div>
+        <div class="stat">
+          <div class="stat-num red">${actionRequired.length}</div>
+          <div class="stat-label">Need Attention</div>
+        </div>
+      </div>`;
+  }
+
+  function renderActionSection(items) {
+    const cards = items.map(item => `
+      <div class="inbox-card action-card">
+        <div class="inbox-subject">${esc(item.subject || '(no subject)')}</div>
+        <div class="inbox-meta">From: ${esc(item.from || '')}</div>
+        <div class="action-reason">${esc(item.reason || '')}</div>
+      </div>`).join('');
+    return `
+      <div class="card inbox-section">
+        <h2 class="inbox-section-title">Need Attention</h2>
+        ${cards}
+      </div>`;
+  }
+
+  function renderSuggestionsSection(emails, suggestions, labels) {
+    if (!emails.length) {
+      return `<div class="card inbox-section">
+        <h2 class="inbox-section-title">Filing Suggestions</h2>
+        <p class="empty">Your inbox is empty.</p>
+      </div>`;
+    }
+
+    const cards = emails.map((em, i) => {
+      const idx = i + 1;
+      const sug = suggestions[idx];
+      const count = (em.count || 1) > 1 ? `<span class="count-badge">${em.count}×</span>` : '';
+      const preview = em.body_snippet
+        ? `<div class="inbox-preview">${esc(em.body_snippet.slice(0, 200))}</div>`
+        : '';
+
+      let sugHtml = '';
+      if (sug && sug.suggested_label) {
+        const allOpts = [...labels];
+        if (!allOpts.includes(sug.suggested_label)) allOpts.unshift(sug.suggested_label);
+        const opts = allOpts.map(lbl =>
+          `<option value="${escAttr(lbl)}"${lbl === sug.suggested_label ? ' selected' : ''}>${esc(lbl.replace('MailMatrixCategories/', ''))}</option>`
+        ).join('');
+        const newBadge = sug.is_new_label ? ' <span class="new-badge">new</span>' : '';
+        const reason = sug.reason ? `<span class="suggestion-reason">${esc(sug.reason)}</span>` : '';
+        sugHtml = `<div class="suggestion">
+          <select class="label-select">${opts}</select>${newBadge}
+          ${reason}
+          <button class="accept-btn" data-from="${escAttr(em.from_addr)}" onclick="handleAccept(this)">Accept</button>
+        </div>`;
+      }
+
+      return `<div class="inbox-card" id="inbox-card-${idx}">
+        <div class="inbox-subject">${esc(em.subject || '(no subject)')} ${count}</div>
+        <div class="inbox-meta">From: ${esc(em.from_display || em.from_addr)}</div>
+        <div class="inbox-meta">Date: ${esc(em.date || '')}</div>
+        ${preview}
+        ${sugHtml}
+      </div>`;
+    }).join('');
+
+    return `
+      <div class="card inbox-section">
+        <h2 class="inbox-section-title">Filing Suggestions</h2>
+        <p class="section-desc">Click Accept to move the email and add the sender to your rules.</p>
+        ${cards}
+      </div>`;
+  }
+
+  async function handleAccept(btn) {
+    const fromAddr = btn.dataset.from;
+    const sug = btn.closest('.suggestion');
+    const select = sug.querySelector('.label-select');
+    const label = select ? select.value : btn.dataset.label;
+    btn.disabled = true;
+    btn.textContent = 'Moving…';
+    if (select) select.disabled = true;
+    try {
+      const res = await fetch('/accept', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({from_addr: fromAddr, label}),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        const shortLabel = label.replace('MailMatrixCategories/', '');
+        sug.innerHTML = '<span class="accepted-msg">✓ Moved to ' + shortLabel + ' · emailRules.json updated</span>';
+      } else {
+        btn.disabled = false;
+        btn.textContent = 'Accept';
+        if (select) select.disabled = false;
+        alert('Error: ' + (data.error || 'Unknown error'));
+      }
+    } catch (err) {
+      btn.disabled = false;
+      btn.textContent = 'Accept';
+      if (select) select.disabled = false;
+      alert('Error: ' + err.message);
+    }
+  }
+
+  function esc(s) {
+    return String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function escAttr(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+  }
+</script>
+{% endblock %}

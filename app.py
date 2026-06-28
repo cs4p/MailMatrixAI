@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -11,8 +12,16 @@ from pathlib import Path
 from dotenv import load_dotenv, set_key
 from flask import Flask, g, jsonify, redirect, render_template, request, send_file, url_for
 
-from emailSummary import accept_filing
-from commonFunctions import connect_to_imap, imap_call as _imap_call, setup_logging
+from emailSummary import accept_filing, analyze_with_claude, deduplicate_inbox_emails
+from cleanupRules import find_domain_collapsible, find_duplicate_addresses
+from commonFunctions import (
+    connect_to_imap,
+    extract_email_address,
+    get_all_labels,
+    imap_call as _imap_call,
+    parse_headers,
+    setup_logging,
+)
 
 load_dotenv()
 setup_logging("app.log")
@@ -492,6 +501,149 @@ def api_rules_convert_domain():
     _save_rules(data)
     log.info("Domain rule created: *@%s → %s", domain, full_label)
     return jsonify({"ok": True})
+
+
+@app.route("/inbox")
+def inbox():
+    return render_template("inbox.html")
+
+
+def _analyze_inbox() -> dict:
+    """Fetch all current INBOX messages, call Claude, return analysis JSON."""
+    server = os.getenv("IMAP_SERVER", "")
+    user = os.getenv("IMAP_USERNAME", "")
+    pw = os.getenv("IMAP_PASSWORD", "")
+    port = int(os.getenv("IMAP_PORT", 993))
+    if not (server and user and pw):
+        return {"ok": False, "error": "IMAP credentials not configured"}
+
+    try:
+        imap = connect_to_imap(server, user, pw, port)
+    except Exception as exc:
+        return {"ok": False, "error": f"IMAP connection failed: {exc}"}
+
+    raw_emails = []
+    labels = []
+    try:
+        labels = get_all_labels(imap, "MailMatrixCategories")
+        _imap_call(lambda: imap.select("INBOX", readonly=True))
+        status, data = _imap_call(lambda: imap.search(None, "ALL"))
+        msg_ids = data[0].split() if status == "OK" and data[0] else []
+        log.info("INBOX fetch: %d messages", len(msg_ids))
+
+        for msg_id in msg_ids:
+            try:
+                st, raw_data = _imap_call(
+                    lambda mid=msg_id: imap.fetch(mid, "(BODY[HEADER.FIELDS (FROM SUBJECT DATE)])")
+                )
+                if st != "OK" or not raw_data or not raw_data[0]:
+                    continue
+                headers = parse_headers(raw_data[0][1].decode(errors="replace"))
+
+                snippet = ""
+                try:
+                    st2, body_data = _imap_call(
+                        lambda mid=msg_id: imap.fetch(mid, "(BODY[TEXT]<0.2000>)")
+                    )
+                    if st2 == "OK" and body_data and body_data[0] and isinstance(body_data[0], tuple):
+                        raw_body = body_data[0][1]
+                        if raw_body:
+                            text = raw_body.decode(errors="replace")
+                            text = re.sub(r"<[^>]+>", " ", text)
+                            text = re.sub(r"\s+", " ", text).strip()
+                            snippet = text[:400]
+                except Exception:
+                    pass
+
+                raw_emails.append({
+                    "msg_id": msg_id,
+                    "from_display": headers["from"],
+                    "from_addr": extract_email_address(headers["from"]),
+                    "subject": headers["subject"] or "(no subject)",
+                    "date": headers["date"],
+                    "body_snippet": snippet,
+                })
+            except Exception as exc:
+                log.error("Error fetching INBOX message %s: %s", msg_id, exc)
+    finally:
+        imap.logout()
+
+    emails = deduplicate_inbox_emails(raw_emails)
+    log.info("Deduplicated to %d unique senders; calling Claude", len(emails))
+    analysis = analyze_with_claude(emails, labels)
+
+    return {
+        "ok": True,
+        "emails": [
+            {k: v for k, v in em.items() if k != "msg_id"}
+            for em in emails
+        ],
+        "labels": labels,
+        "action_required": analysis.get("action_required", []),
+        "filing_suggestions": analysis.get("filing_suggestions", []),
+        "error": analysis.get("_error"),
+    }
+
+
+@app.route("/api/inbox-analyze")
+def api_inbox_analyze():
+    result = _analyze_inbox()
+    if not result.get("ok"):
+        return jsonify(result), 500
+    return jsonify(result)
+
+
+@app.route("/cleanup")
+def cleanup():
+    data = _load_rules()
+    collapses = find_domain_collapsible(data)
+    duplicates = find_duplicate_addresses(data)
+    return render_template("cleanup.html", collapses=collapses, duplicates=duplicates)
+
+
+@app.route("/api/cleanup/collapse-domain", methods=["POST"])
+def api_cleanup_collapse_domain():
+    body = request.get_json(force=True)
+    domain = body.get("domain", "").strip()
+    if not domain:
+        return jsonify({"ok": False, "error": "Missing domain"}), 400
+
+    data = _load_rules()
+    removed = 0
+    for entry in data.get("labels", []):
+        addrs = entry.get("emailAddresses", [])
+        before = len(addrs)
+        entry["emailAddresses"] = [a for a in addrs if not a.lower().endswith(f"@{domain}")]
+        removed += before - len(entry["emailAddresses"])
+
+    if removed:
+        _save_rules(data)
+    log.info("Domain collapse *@%s: removed %d sender rule(s)", domain, removed)
+    return jsonify({"ok": True, "removed": removed})
+
+
+@app.route("/api/cleanup/resolve-duplicate", methods=["POST"])
+def api_cleanup_resolve_duplicate():
+    body = request.get_json(force=True)
+    address = body.get("address", "").strip()
+    keep_label = body.get("keep_label", "").strip()
+    if not address or not keep_label:
+        return jsonify({"ok": False, "error": "Missing address or keep_label"}), 400
+
+    data = _load_rules()
+    removed = 0
+    for entry in data.get("labels", []):
+        if entry["labelName"] == keep_label:
+            continue
+        addrs = entry.get("emailAddresses", [])
+        if address in addrs:
+            addrs.remove(address)
+            removed += 1
+
+    if removed:
+        _save_rules(data)
+    log.info("Duplicate resolved: kept <%s> in %s, removed from %d label(s)", address, keep_label, removed)
+    return jsonify({"ok": True, "removed": removed})
 
 
 if __name__ == "__main__":
