@@ -5,6 +5,7 @@ import os
 import re
 import socket
 import socketserver
+import subprocess
 import sys
 import threading
 import webbrowser
@@ -621,6 +622,22 @@ def main() -> None:
         target_date = date.today()
 
     log.info("Generating email summary for %s", target_date)
+
+    # Sort inbox first so the summary reflects the post-filing state
+    sort_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sortEmail.py")
+    log.info("Running sortEmail.py before generating summary...")
+    sort_result = subprocess.run(
+        [sys.executable, sort_script],
+        capture_output=True, text=True, timeout=180,
+    )
+    if sort_result.returncode == 0:
+        log.info("Sort completed successfully")
+    else:
+        log.warning(
+            "sortEmail.py exited with code %d — continuing anyway: %s",
+            sort_result.returncode,
+            sort_result.stderr[-500:],
+        )
 
     imap_server = os.environ["IMAP_SERVER"]
     imap_port = int(os.environ.get("IMAP_PORT", "993"))
