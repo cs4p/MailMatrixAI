@@ -1,6 +1,4 @@
-import json
 import logging
-import os
 import re
 import subprocess
 import sys
@@ -16,16 +14,22 @@ from emailSummary import accept_filing, analyze_with_claude, deduplicate_inbox_e
 from cleanupRules import find_domain_collapsible, find_duplicate_addresses
 from commonFunctions import (
     KEYCHAIN_SERVICE,
+    build_rule_groups,
     connect_to_imap,
+    convert_domain_rule,
+    delete_rule,
     extract_email_address,
+    full_label_name,
     get_all_labels,
     get_credential,
     imap_call as _imap_call,
+    load_rules_file,
+    move_imap_messages,
     parse_headers,
-    rules_lock,
+    save_rules_file,
     set_credential,
     setup_logging,
-    validate_email_address,
+    update_sender_rule,
     validate_label,
 )
 
@@ -100,10 +104,7 @@ _migrate_env_to_keychain()
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _load_rules() -> dict:
-    if RULES_PATH.exists():
-        with open(RULES_PATH, encoding="utf-8") as f:
-            return json.load(f)
-    return {"labels": []}
+    return load_rules_file(RULES_PATH)
 
 
 def _inbox_count() -> int:
@@ -128,55 +129,8 @@ def _inbox_count() -> int:
         return -1
 
 
-def _full_label(name: str) -> str:
-    if name.startswith("MailMatrixCategories/"):
-        return name
-    return f"MailMatrixCategories/{name}"
-
-
 def _save_rules(data: dict) -> None:
-    with rules_lock:
-        with open(RULES_PATH, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-
-
-def _move_imap_messages(address: str, from_full_label: str, to_full_label: str) -> dict:
-    if not validate_email_address(address):  # H2: reject IMAP injection chars
-        return {"ok": False, "error": "Invalid address", "moved": 0}
-    log.info("Moving messages for <%s>: %s → %s", address, from_full_label, to_full_label)
-    try:
-        server = os.getenv("IMAP_SERVER", "")
-        user = os.getenv("IMAP_USERNAME", "")
-        pw = os.getenv("IMAP_PASSWORD", "")
-        port = int(os.getenv("IMAP_PORT", 993))
-        if not (server and user and pw):
-            log.warning("IMAP move skipped: credentials not configured")
-            return {"ok": False, "error": "IMAP not configured", "moved": 0}
-
-        imap = connect_to_imap(server, user, pw, port)
-        try:
-            ok, _ = _imap_call(lambda: imap.select(f'"{from_full_label}"'))
-            if ok != "OK":
-                log.warning("Cannot select folder %s", from_full_label)
-                return {"ok": False, "error": f"Cannot select {from_full_label}", "moved": 0}
-
-            ok, data = _imap_call(lambda: imap.search(None, f'FROM "{address}"'))
-            msg_ids = data[0].split() if ok == "OK" and data[0] else []
-
-            for mid in msg_ids:
-                _imap_call(lambda m=mid: imap.copy(m, f'"{to_full_label}"'))
-                _imap_call(lambda m=mid: imap.store(m, '+FLAGS', r'\Deleted'))
-
-            if msg_ids:
-                _imap_call(lambda: imap.expunge())
-
-            log.info("Moved %d message(s) for <%s>", len(msg_ids), address)
-            return {"ok": True, "moved": len(msg_ids)}
-        finally:
-            imap.logout()
-    except Exception as exc:
-        log.error("IMAP move failed for <%s>: %s", address, exc)
-        return {"ok": False, "error": str(exc), "moved": 0}
+    save_rules_file(RULES_PATH, data)
 
 
 def _summary_files() -> list[dict]:
@@ -255,63 +209,15 @@ def view_summary(filename: str):
 
 @app.route("/rules")
 def rules():
-    from collections import defaultdict
     data = _load_rules()
-    labels = data.get("labels", [])
-
-    domain_to_info = defaultdict(lambda: {"senders": [], "domain_rules": []})
-
-    for entry in labels:
-        short = entry["labelName"].replace("MailMatrixCategories/", "")
-        full = entry["labelName"]
-        for addr in entry.get("emailAddresses", []):
-            domain = addr.split("@")[-1] if "@" in addr else "__no_domain__"
-            domain_to_info[domain]["senders"].append({
-                "address": addr, "label": short, "full_label": full,
-            })
-        for domain in entry.get("emailDomains", []):
-            domain_to_info[domain]["domain_rules"].append({
-                "domain": domain, "label": short, "full_label": full,
-            })
-
-    groups = []
-    for domain in sorted(domain_to_info.keys()):
-        info = domain_to_info[domain]
-        senders = sorted(info["senders"], key=lambda x: x["address"])
-        domain_rules = info["domain_rules"]
-        # Unique (short_label, full_label) pairs for this domain's senders, sorted
-        sender_label_pairs = sorted(
-            {(s["label"], s["full_label"]) for s in senders},
-            key=lambda x: x[0],
-        )
-        can_convert = (
-            len(senders) > 0
-            and len(domain_rules) == 0
-            and domain != "__no_domain__"
-        )
-        all_group_labels = sorted({s["label"] for s in senders} | {r["label"] for r in domain_rules})
-        groups.append({
-            "domain": domain,
-            "senders": senders,
-            "domain_rules": domain_rules,
-            "can_convert": can_convert,
-            "sender_label_pairs": sender_label_pairs,
-            "labels_in_group": all_group_labels,
-        })
-
-    all_label_names = sorted({
-        entry["labelName"].replace("MailMatrixCategories/", "")
-        for entry in labels
-    })
-    total_senders = sum(len(g["senders"]) for g in groups)
-    total_domain_rules = sum(len(g["domain_rules"]) for g in groups)
+    grouped = build_rule_groups(data)
 
     return render_template(
         "rules.html",
-        groups=groups,
-        label_names=all_label_names,
-        total_senders=total_senders,
-        total_domain_rules=total_domain_rules,
+        groups=grouped["groups"],
+        label_names=grouped["label_names"],
+        total_senders=grouped["total_senders"],
+        total_domain_rules=grouped["total_domain_rules"],
     )
 
 
@@ -436,32 +342,18 @@ def api_rules_delete():
     body = request.get_json(force=True)
     kind = body.get("type")          # "sender" or "domain"
     full_label = body.get("full_label", "").strip()
-    data = _load_rules()
-    changed = False
-
-    if kind == "sender":
-        address = body.get("address", "").strip()
-        for entry in data.get("labels", []):
-            if entry["labelName"] == full_label:
-                if address in entry.get("emailAddresses", []):
-                    entry["emailAddresses"].remove(address)
-                    changed = True
-                    log.info("Rule deleted: <%s> → %s", address, full_label)
-                break
-    elif kind == "domain":
-        domain = body.get("domain", "").strip()
-        for entry in data.get("labels", []):
-            if entry["labelName"] == full_label:
-                if domain in entry.get("emailDomains", []):
-                    entry["emailDomains"].remove(domain)
-                    changed = True
-                    log.info("Domain rule deleted: *@%s → %s", domain, full_label)
-                break
-    else:
+    if kind not in ("sender", "domain"):
         return jsonify({"ok": False, "error": "Invalid type"}), 400
 
+    data = _load_rules()
+    changed = delete_rule(
+        data, kind, full_label,
+        address=body.get("address", "").strip(),
+        domain=body.get("domain", "").strip(),
+    )
     if changed:
         _save_rules(data)
+        log.info("Rule deleted: %s → %s", body.get("address") or body.get("domain"), full_label)
     return jsonify({"ok": True})
 
 
@@ -471,7 +363,7 @@ def api_rules_update_sender():
     address = body.get("address", "").strip()
     old_full_label = body.get("old_full_label", "").strip()
     new_label_input = body.get("new_label", "").strip()
-    new_full_label = _full_label(new_label_input)
+    new_full_label = full_label_name(new_label_input)
 
     if not address or not old_full_label or not new_label_input:
         return jsonify({"ok": False, "error": "Missing required fields"}), 400
@@ -479,35 +371,18 @@ def api_rules_update_sender():
         return jsonify({"ok": False, "error": "Invalid label name"}), 400
 
     data = _load_rules()
-
-    # Remove from old label
-    for entry in data.get("labels", []):
-        if entry["labelName"] == old_full_label:
-            addrs = entry.get("emailAddresses", [])
-            if address in addrs:
-                addrs.remove(address)
-            break
-
-    # Add to new label (or create it)
-    for entry in data.get("labels", []):
-        if entry["labelName"] == new_full_label:
-            addrs = entry.setdefault("emailAddresses", [])
-            if address not in addrs:
-                addrs.append(address)
-                addrs.sort()
-            break
-    else:
-        data.setdefault("labels", []).append({
-            "labelName": new_full_label,
-            "emailAddresses": [address],
-            "emailDomains": [],
-        })
-
+    update_sender_rule(data, address, old_full_label, new_full_label)
     _save_rules(data)
     log.info("Rule updated: <%s> %s → %s", address, old_full_label, new_full_label)
 
     # Move matching messages from old label to new label
-    move = _move_imap_messages(address, old_full_label, new_full_label)
+    move = move_imap_messages(
+        address, old_full_label, new_full_label,
+        imap_server=get_credential("IMAP_SERVER"),
+        imap_port=int(get_credential("IMAP_PORT", "993")),
+        username=get_credential("IMAP_USERNAME"),
+        password=get_credential("IMAP_PASSWORD"),
+    )
     return jsonify({"ok": True, "moved": move.get("moved", 0), "imap": move})
 
 
@@ -521,25 +396,7 @@ def api_rules_convert_domain():
         return jsonify({"ok": False, "error": "Missing domain or label"}), 400
 
     data = _load_rules()
-    for entry in data.get("labels", []):
-        if entry["labelName"] == full_label:
-            domains = entry.setdefault("emailDomains", [])
-            if domain not in domains:
-                domains.append(domain)
-                domains.sort()
-            # Remove individual senders subsumed by this domain rule
-            entry["emailAddresses"] = [
-                a for a in entry.get("emailAddresses", [])
-                if not a.lower().endswith(f"@{domain}")
-            ]
-            break
-    else:
-        data.setdefault("labels", []).append({
-            "labelName": full_label,
-            "emailAddresses": [],
-            "emailDomains": [domain],
-        })
-
+    convert_domain_rule(data, domain, full_label)
     _save_rules(data)
     log.info("Domain rule created: *@%s → %s", domain, full_label)
     return jsonify({"ok": True})

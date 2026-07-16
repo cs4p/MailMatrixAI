@@ -1,13 +1,16 @@
 import imaplib
+import json
 import logging
 import os
 import random
 import re
 import threading
 import time
+from collections import defaultdict
 from datetime import date
 from email.header import decode_header as _decode_header
-from typing import Callable, List, Optional
+from pathlib import Path
+from typing import Callable, List, Optional, Union
 
 import keyring
 
@@ -171,3 +174,187 @@ def parse_headers(raw: str) -> dict:
 
 def imap_date(d: date) -> str:
     return f"{d.day}-{d.strftime('%b')}-{d.strftime('%Y')}"
+
+
+# ── Rules management (shared by app.py's /rules routes and inboxAnalysis.py) ──
+
+def load_rules_file(path: Union[str, Path]) -> dict:
+    """Read emailRules.json, defaulting to an empty rule set if it doesn't exist yet."""
+    path = Path(path)
+    if path.exists():
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    return {"labels": []}
+
+
+def save_rules_file(path: Union[str, Path], data: dict) -> None:
+    """Write emailRules.json, guarded by the shared rules_lock (H6)."""
+    with rules_lock:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+
+
+def full_label_name(name: str) -> str:
+    """Prefix a bare label name with MailMatrixCategories/ unless already qualified."""
+    if name.startswith("MailMatrixCategories/"):
+        return name
+    return f"MailMatrixCategories/{name}"
+
+
+def build_rule_groups(data: dict) -> dict:
+    """Group emailRules.json entries by sender domain for the Rules UI.
+
+    Returns one card per domain with its individual sender rules and any
+    domain-glob rule, plus whether the senders can be collapsed into one.
+    """
+    labels = data.get("labels", [])
+    domain_to_info = defaultdict(lambda: {"senders": [], "domain_rules": []})
+
+    for entry in labels:
+        short = entry["labelName"].replace("MailMatrixCategories/", "")
+        full = entry["labelName"]
+        for addr in entry.get("emailAddresses", []):
+            domain = addr.split("@")[-1] if "@" in addr else "__no_domain__"
+            domain_to_info[domain]["senders"].append({
+                "address": addr, "label": short, "full_label": full,
+            })
+        for domain in entry.get("emailDomains", []):
+            domain_to_info[domain]["domain_rules"].append({
+                "domain": domain, "label": short, "full_label": full,
+            })
+
+    groups = []
+    for domain in sorted(domain_to_info.keys()):
+        info = domain_to_info[domain]
+        senders = sorted(info["senders"], key=lambda x: x["address"])
+        domain_rules = info["domain_rules"]
+        sender_label_pairs = sorted(
+            {(s["label"], s["full_label"]) for s in senders},
+            key=lambda x: x[0],
+        )
+        can_convert = (
+            len(senders) > 0
+            and len(domain_rules) == 0
+            and domain != "__no_domain__"
+        )
+        all_group_labels = sorted({s["label"] for s in senders} | {r["label"] for r in domain_rules})
+        groups.append({
+            "domain": domain,
+            "senders": senders,
+            "domain_rules": domain_rules,
+            "can_convert": can_convert,
+            "sender_label_pairs": sender_label_pairs,
+            "labels_in_group": all_group_labels,
+        })
+
+    all_label_names = sorted({
+        entry["labelName"].replace("MailMatrixCategories/", "")
+        for entry in labels
+    })
+    return {
+        "groups": groups,
+        "label_names": all_label_names,
+        "total_senders": sum(len(g["senders"]) for g in groups),
+        "total_domain_rules": sum(len(g["domain_rules"]) for g in groups),
+    }
+
+
+def delete_rule(data: dict, kind: str, full_label: str, address: str = "", domain: str = "") -> bool:
+    """Remove a sender or domain rule from a label entry. Returns True if something changed."""
+    for entry in data.get("labels", []):
+        if entry["labelName"] != full_label:
+            continue
+        if kind == "sender" and address in entry.get("emailAddresses", []):
+            entry["emailAddresses"].remove(address)
+            return True
+        if kind == "domain" and domain in entry.get("emailDomains", []):
+            entry["emailDomains"].remove(domain)
+            return True
+        break
+    return False
+
+
+def update_sender_rule(data: dict, address: str, old_full_label: str, new_full_label: str) -> None:
+    """Move a sender address from one label entry to another, creating the new one if needed."""
+    for entry in data.get("labels", []):
+        if entry["labelName"] == old_full_label:
+            addrs = entry.get("emailAddresses", [])
+            if address in addrs:
+                addrs.remove(address)
+            break
+
+    for entry in data.get("labels", []):
+        if entry["labelName"] == new_full_label:
+            addrs = entry.setdefault("emailAddresses", [])
+            if address not in addrs:
+                addrs.append(address)
+                addrs.sort()
+            return
+
+    data.setdefault("labels", []).append({
+        "labelName": new_full_label,
+        "emailAddresses": [address],
+        "emailDomains": [],
+    })
+
+
+def convert_domain_rule(data: dict, domain: str, full_label: str) -> None:
+    """Add a domain-glob rule to full_label and drop individual senders it now subsumes."""
+    for entry in data.get("labels", []):
+        if entry["labelName"] == full_label:
+            domains = entry.setdefault("emailDomains", [])
+            if domain not in domains:
+                domains.append(domain)
+                domains.sort()
+            entry["emailAddresses"] = [
+                a for a in entry.get("emailAddresses", [])
+                if not a.lower().endswith(f"@{domain}")
+            ]
+            return
+
+    data.setdefault("labels", []).append({
+        "labelName": full_label,
+        "emailAddresses": [],
+        "emailDomains": [domain],
+    })
+
+
+def move_imap_messages(address: str, from_full_label: str, to_full_label: str,
+                        imap_server: str, imap_port: int, username: str, password: str) -> dict:
+    """Copy every message from `address` in from_full_label into to_full_label and expunge the originals."""
+    if not validate_email_address(address):
+        return {"ok": False, "error": "Invalid address", "moved": 0}
+    if not (imap_server and username and password):
+        log.warning("IMAP move skipped: credentials not configured")
+        return {"ok": False, "error": "IMAP not configured", "moved": 0}
+
+    log.info("Moving messages for <%s>: %s → %s", address, from_full_label, to_full_label)
+    try:
+        imap = connect_to_imap(imap_server, username, password, imap_port)
+    except Exception as exc:
+        log.error("IMAP move failed for <%s>: %s", address, exc)
+        return {"ok": False, "error": str(exc), "moved": 0}
+
+    try:
+        status, _ = imap_call(lambda: imap.select(f'"{from_full_label}"'))
+        if status != "OK":
+            log.warning("Cannot select folder %s", from_full_label)
+            return {"ok": False, "error": f"Cannot select {from_full_label}", "moved": 0}
+
+        status, search_data = imap_call(lambda: imap.search(None, f'FROM "{address}"'))
+        msg_ids = search_data[0].split() if status == "OK" and search_data[0] else []
+
+        for mid in msg_ids:
+            imap_call(lambda m=mid: imap.copy(m, f'"{to_full_label}"'))
+            imap_call(lambda m=mid: imap.store(m, '+FLAGS', r'\Deleted'))
+
+        if msg_ids:
+            imap_call(lambda: imap.expunge())
+
+        log.info("Moved %d message(s) for <%s>", len(msg_ids), address)
+        return {"ok": True, "moved": len(msg_ids)}
+    except Exception as exc:
+        log.error("IMAP move failed for <%s>: %s", address, exc)
+        return {"ok": False, "error": str(exc), "moved": 0}
+    finally:
+        imap.logout()
