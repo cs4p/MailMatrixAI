@@ -1,7 +1,41 @@
 import json
 from unittest.mock import MagicMock
 
+import keyring.errors
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _fake_keychain(monkeypatch):
+    """Never let a test touch the real macOS Keychain.
+
+    Incident (2026-07-16): only keyring.get_password was mocked here before
+    (always returning None) while set_password/delete_password hit the real
+    Keychain. Under the old one-item-per-key credential scheme that only
+    clobbered whichever single key a test posted; under the consolidated
+    single-JSON-blob scheme (commonFunctions.get_credential/set_credential),
+    every write does a read-modify-write of the *whole* blob — since the
+    mocked read always saw "nothing", every test write wiped out the real
+    stored credentials entirely. This in-memory fake keychain makes
+    get/set/delete behave consistently against a per-test store instead,
+    so no test can reach real system Keychain storage, ever.
+    """
+    store: dict[tuple[str, str], str] = {}
+
+    def _get(service, username):
+        return store.get((service, username))
+
+    def _set(service, username, password):
+        store[(service, username)] = password
+
+    def _delete(service, username):
+        if (service, username) not in store:
+            raise keyring.errors.PasswordDeleteError("not found")
+        del store[(service, username)]
+
+    monkeypatch.setattr("keyring.get_password", _get)
+    monkeypatch.setattr("keyring.set_password", _set)
+    monkeypatch.setattr("keyring.delete_password", _delete)
 
 
 @pytest.fixture

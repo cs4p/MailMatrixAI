@@ -42,7 +42,6 @@ def client(tmp_path):
     flask_app.config["TESTING"] = True
 
     with (
-        patch("keyring.get_password", return_value=None),  # credentials come from os.environ in tests
         patch.object(flask_app_module, "RULES_PATH", rules_file),
         patch.object(flask_app_module, "SUMMARY_DIR", summary_dir),
         patch.object(flask_app_module, "ENV_PATH", env_file),

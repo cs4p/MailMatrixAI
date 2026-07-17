@@ -6,8 +6,10 @@ import pytest
 
 from commonFunctions import (
     build_rule_groups,
+    collapse_domain_rule,
     connect_to_imap,
     convert_domain_rule,
+    dashboard_stats,
     decode_header_value,
     delete_rule,
     extract_email_address,
@@ -17,6 +19,8 @@ from commonFunctions import (
     imap_date,
     move_imap_messages,
     parse_headers,
+    resolve_duplicate_address,
+    summary_files,
     update_sender_rule,
 )
 
@@ -377,3 +381,109 @@ def test_move_imap_messages_no_messages_found(mock_imap):
         )
     assert result == {"ok": True, "moved": 0}
     mock_imap.expunge.assert_not_called()
+
+
+# ── summary_files ──────────────────────────────────────────────────────────────
+
+def test_summary_files_empty_dir_missing(tmp_path):
+    assert summary_files(tmp_path / "does-not-exist") == []
+
+
+def test_summary_files_parses_date_and_label(tmp_path):
+    (tmp_path / "email_summary_2026-07-16.html").write_text("<html></html>")
+    (tmp_path / "email_summary_2026-07-01.html").write_text("<html></html>")
+    (tmp_path / "not_a_summary.html").write_text("<html></html>")
+
+    files = summary_files(tmp_path)
+
+    assert [f["date"] for f in files] == ["2026-07-16", "2026-07-01"]  # newest first
+    assert files[0]["filename"] == "email_summary_2026-07-16.html"
+    assert files[0]["label"] == "July 16, 2026"
+
+
+def test_summary_files_falls_back_to_raw_date_part_on_parse_failure(tmp_path):
+    (tmp_path / "email_summary_not-a-date.html").write_text("<html></html>")
+    files = summary_files(tmp_path)
+    assert files[0]["label"] == "not-a-date"
+
+
+# ── dashboard_stats ────────────────────────────────────────────────────────────
+
+def test_dashboard_stats_counts_labels_and_rules(rules_data, tmp_path):
+    stats = dashboard_stats(rules_data, tmp_path, date(2026, 7, 16))
+    assert stats["label_count"] == 2
+    assert stats["rules_count"] == 4  # 2 Work senders + 1 Shopping sender + 1 Shopping domain
+    assert stats["summary_count"] == 0
+
+
+def test_dashboard_stats_recent_days_labels_today_and_yesterday(tmp_path):
+    stats = dashboard_stats({"labels": []}, tmp_path, date(2026, 7, 16))
+    days = stats["recent_days"]
+    assert len(days) == 7
+    assert days[0] == {"date": "2026-07-16", "label": "Today", "has_summary": False, "filename": None}
+    assert days[1]["label"] == "Yesterday"
+    assert days[1]["date"] == "2026-07-15"
+
+
+def test_dashboard_stats_marks_has_summary_and_filename(tmp_path):
+    (tmp_path / "email_summary_2026-07-16.html").write_text("<html></html>")
+    stats = dashboard_stats({"labels": []}, tmp_path, date(2026, 7, 16))
+    assert stats["summary_count"] == 1
+    assert stats["recent_days"][0]["has_summary"] is True
+    assert stats["recent_days"][0]["filename"] == "email_summary_2026-07-16.html"
+
+
+# ── collapse_domain_rule ───────────────────────────────────────────────────────
+
+def test_collapse_domain_rule_removes_matching_addresses():
+    data = {
+        "labels": [
+            {
+                "labelName": "MailMatrixCategories/Work",
+                "emailAddresses": ["alice@work.com", "bob@work.com"],
+                "emailDomains": ["work.com"],
+            }
+        ]
+    }
+    removed = collapse_domain_rule(data, "work.com")
+    assert removed == 2
+    assert data["labels"][0]["emailAddresses"] == []
+
+
+def test_collapse_domain_rule_removes_cross_label_addresses():
+    data = {
+        "labels": [
+            {"labelName": "MailMatrixCategories/Work", "emailAddresses": [], "emailDomains": ["work.com"]},
+            {"labelName": "MailMatrixCategories/VIP", "emailAddresses": ["vip@work.com"], "emailDomains": []},
+        ]
+    }
+    removed = collapse_domain_rule(data, "work.com")
+    assert removed == 1
+    vip = next(e for e in data["labels"] if e["labelName"] == "MailMatrixCategories/VIP")
+    assert "vip@work.com" not in vip["emailAddresses"]
+
+
+def test_collapse_domain_rule_returns_none_when_no_domain_rule_exists(rules_data):
+    assert collapse_domain_rule(rules_data, "no-such-domain.com") is None
+
+
+# ── resolve_duplicate_address ──────────────────────────────────────────────────
+
+def test_resolve_duplicate_address_removes_from_other_labels():
+    data = {
+        "labels": [
+            {"labelName": "MailMatrixCategories/Work", "emailAddresses": ["shared@example.com"], "emailDomains": []},
+            {"labelName": "MailMatrixCategories/VIP", "emailAddresses": ["shared@example.com"], "emailDomains": []},
+        ]
+    }
+    removed = resolve_duplicate_address(data, "shared@example.com", "MailMatrixCategories/Work")
+    assert removed == 1
+    work = next(e for e in data["labels"] if e["labelName"] == "MailMatrixCategories/Work")
+    vip = next(e for e in data["labels"] if e["labelName"] == "MailMatrixCategories/VIP")
+    assert "shared@example.com" in work["emailAddresses"]
+    assert "shared@example.com" not in vip["emailAddresses"]
+
+
+def test_resolve_duplicate_address_no_op_when_not_duplicated(rules_data):
+    removed = resolve_duplicate_address(rules_data, "boss@work.com", "MailMatrixCategories/Work")
+    assert removed == 0

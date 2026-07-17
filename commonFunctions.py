@@ -7,7 +7,7 @@ import re
 import threading
 import time
 from collections import defaultdict
-from datetime import date
+from datetime import date, timedelta
 from email.header import decode_header as _decode_header
 from pathlib import Path
 from typing import Callable, List, Optional, Union
@@ -15,6 +15,21 @@ from typing import Callable, List, Optional, Union
 import keyring
 
 KEYCHAIN_SERVICE = "MailMatrixAI"
+
+# All credentials live in a single Keychain item (one JSON blob) rather than
+# one item per key — must match _CREDENTIALS_ACCOUNT's value below on any
+# other client of this Keychain item (the Swift app's KeychainService.swift
+# uses the same "credentials" account name). Storing everything in one item
+# means macOS prompts for Keychain access once instead of once per key.
+_CREDENTIALS_ACCOUNT = "credentials"
+
+# The 5 keys previously stored as separate Keychain items (account=key) before
+# the single-blob consolidation above — used only to pull old values forward
+# on first run under the new scheme. Must match _CREDENTIAL_KEYS in app.py and
+# KeychainService.credentialKeys in the Swift app.
+_LEGACY_CREDENTIAL_KEYS = (
+    "IMAP_SERVER", "IMAP_PORT", "IMAP_USERNAME", "IMAP_PASSWORD", "ANTHROPIC_API_KEY",
+)
 
 _RATE_LIMIT_PHRASES = ('throttl', 'rate limit', 'too many', 'overquota', 'slow down')
 _MAX_RETRIES = 5
@@ -29,18 +44,66 @@ _LIST_RE = re.compile(rb'\([^)]*\) "([^"]*)" "?([^"]*)"?')
 log = logging.getLogger(__name__)
 
 
+def _read_legacy_credential_items() -> dict:
+    """Read values still stored under the old one-item-per-key scheme
+    (pre-consolidation), without deleting anything.
+    """
+    legacy = {}
+    for key in _LEGACY_CREDENTIAL_KEYS:
+        val = keyring.get_password(KEYCHAIN_SERVICE, key)
+        if val is not None:
+            legacy[key] = val
+    return legacy
+
+
+def _load_credentials() -> dict:
+    """Load the single JSON credentials blob from Keychain, migrating forward
+    from the old per-key items on first run under the new scheme.
+    """
+    raw = keyring.get_password(KEYCHAIN_SERVICE, _CREDENTIALS_ACCOUNT)
+    if raw:
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            log.warning("Keychain credentials blob was not valid JSON — ignoring it")
+
+    legacy = _read_legacy_credential_items()
+    if legacy:
+        # Write the consolidated blob before removing the old items, so a
+        # failed write can't lose data.
+        keyring.set_password(KEYCHAIN_SERVICE, _CREDENTIALS_ACCOUNT, json.dumps(legacy))
+        for key in legacy:
+            try:
+                keyring.delete_password(KEYCHAIN_SERVICE, key)
+            except keyring.errors.KeyringError:
+                pass
+        log.info("Migrated %d credential(s) from per-key Keychain items into one blob",
+                 len(legacy))
+    return legacy
+
+
 def get_credential(key: str, default: str = "") -> str:
-    """Return a credential from macOS Keychain, falling back to os.environ."""
-    val = keyring.get_password(KEYCHAIN_SERVICE, key)
-    if val is not None:
-        return val
+    """Return a credential from the single macOS Keychain blob, falling back to os.environ."""
+    creds = _load_credentials()
+    if key in creds:
+        return creds[key]
     return os.environ.get(key, default)
 
 
 def set_credential(key: str, value: str) -> None:
-    """Write a credential to macOS Keychain and keep os.environ in sync."""
-    keyring.set_password(KEYCHAIN_SERVICE, key, value)
+    """Write a credential into the single macOS Keychain blob and keep os.environ in sync."""
+    creds = _load_credentials()
+    creds[key] = value
+    keyring.set_password(KEYCHAIN_SERVICE, _CREDENTIALS_ACCOUNT, json.dumps(creds))
     os.environ[key] = value
+
+
+def credential_keys_in_keychain() -> set:
+    """Return the set of credential keys currently stored in the Keychain blob
+    (ignores the os.environ fallback — used by the .env migration to avoid
+    clobbering a value the user already configured).
+    """
+    return set(_load_credentials().keys())
 
 
 def setup_logging(log_file: str) -> None:
@@ -194,6 +257,60 @@ def save_rules_file(path: Union[str, Path], data: dict) -> None:
             json.dump(data, f, indent=2, ensure_ascii=False)
 
 
+def summary_files(summary_dir: Union[str, Path]) -> List[dict]:
+    """List saved email_summary_*.html reports, newest first."""
+    summary_dir = Path(summary_dir)
+    files = []
+    if summary_dir.exists():
+        for p in sorted(summary_dir.glob("email_summary_*.html"), reverse=True):
+            date_part = p.stem.replace("email_summary_", "")
+            try:
+                d = date.fromisoformat(date_part)
+                label = d.strftime("%B %d, %Y")
+            except ValueError:
+                label = date_part
+            files.append({"filename": p.name, "label": label, "date": date_part})
+    return files
+
+
+def dashboard_stats(rules_data: dict, summary_dir: Union[str, Path], today: date) -> dict:
+    """Aggregate the label/rule/summary counts and 7-day summary grid for the Dashboard."""
+    labels = rules_data.get("labels", [])
+    label_count = len(labels)
+    rules_count = sum(
+        len(entry.get("emailAddresses", [])) + len(entry.get("emailDomains", []))
+        for entry in labels
+    )
+    all_summaries = summary_files(summary_dir)
+    summary_count = len(all_summaries)
+    existing_dates = {f["date"] for f in all_summaries}
+
+    recent_days = []
+    for i in range(7):
+        d = today - timedelta(days=i)
+        date_str = d.isoformat()
+        if i == 0:
+            label = "Today"
+        elif i == 1:
+            label = "Yesterday"
+        else:
+            label = f"{d.strftime('%a, %b')} {d.day}"
+        has_summary = date_str in existing_dates
+        recent_days.append({
+            "date": date_str,
+            "label": label,
+            "has_summary": has_summary,
+            "filename": f"email_summary_{date_str}.html" if has_summary else None,
+        })
+
+    return {
+        "label_count": label_count,
+        "rules_count": rules_count,
+        "summary_count": summary_count,
+        "recent_days": recent_days,
+    }
+
+
 def full_label_name(name: str) -> str:
     """Prefix a bare label name with MailMatrixCategories/ unless already qualified."""
     if name.startswith("MailMatrixCategories/"):
@@ -272,6 +389,40 @@ def delete_rule(data: dict, kind: str, full_label: str, address: str = "", domai
             return True
         break
     return False
+
+
+def collapse_domain_rule(data: dict, domain: str) -> Optional[int]:
+    """Remove every individual sender address under `domain`, since an existing
+    domain-glob rule already covers them (even across labels). Returns the
+    removed count, or None if no domain rule exists for `domain`.
+    """
+    has_domain_rule = any(
+        domain in entry.get("emailDomains", [])
+        for entry in data.get("labels", [])
+    )
+    if not has_domain_rule:
+        return None
+
+    removed = 0
+    for entry in data.get("labels", []):
+        addrs = entry.get("emailAddresses", [])
+        before = len(addrs)
+        entry["emailAddresses"] = [a for a in addrs if not a.lower().endswith(f"@{domain}")]
+        removed += before - len(entry["emailAddresses"])
+    return removed
+
+
+def resolve_duplicate_address(data: dict, address: str, keep_label: str) -> int:
+    """Remove `address` from every label except `keep_label`. Returns the removed count."""
+    removed = 0
+    for entry in data.get("labels", []):
+        if entry["labelName"] == keep_label:
+            continue
+        addrs = entry.get("emailAddresses", [])
+        if address in addrs:
+            addrs.remove(address)
+            removed += 1
+    return removed
 
 
 def update_sender_rule(data: dict, address: str, old_full_label: str, new_full_label: str) -> None:

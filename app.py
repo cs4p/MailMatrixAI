@@ -4,7 +4,7 @@ import subprocess
 import sys
 import threading
 import time
-from datetime import date, timedelta
+from datetime import date
 from pathlib import Path
 
 from dotenv import load_dotenv, dotenv_values
@@ -13,10 +13,12 @@ from flask import Flask, g, jsonify, redirect, render_template, request, send_fi
 from emailSummary import accept_filing, analyze_with_claude, deduplicate_inbox_emails
 from cleanupRules import find_domain_collapsible, find_duplicate_addresses
 from commonFunctions import (
-    KEYCHAIN_SERVICE,
     build_rule_groups,
+    collapse_domain_rule,
     connect_to_imap,
     convert_domain_rule,
+    credential_keys_in_keychain,
+    dashboard_stats,
     delete_rule,
     extract_email_address,
     full_label_name,
@@ -26,9 +28,11 @@ from commonFunctions import (
     load_rules_file,
     move_imap_messages,
     parse_headers,
+    resolve_duplicate_address,
     save_rules_file,
     set_credential,
     setup_logging,
+    summary_files,
     update_sender_rule,
     validate_label,
 )
@@ -82,12 +86,12 @@ def _migrate_env_to_keychain() -> None:
     if not ENV_PATH.exists():
         return
     try:
-        import keyring as _kr
         values = dotenv_values(str(ENV_PATH))
+        existing_keys = credential_keys_in_keychain()
         migrated = []
         for key in _CREDENTIAL_KEYS:
             val = (values.get(key) or "").strip()
-            if val and _kr.get_password(KEYCHAIN_SERVICE, key) is None:
+            if val and key not in existing_keys:
                 set_credential(key, val)
                 migrated.append(key)
         if migrated:
@@ -133,67 +137,27 @@ def _save_rules(data: dict) -> None:
     save_rules_file(RULES_PATH, data)
 
 
-def _summary_files() -> list[dict]:
-    files = []
-    if SUMMARY_DIR.exists():
-        for p in sorted(SUMMARY_DIR.glob("email_summary_*.html"), reverse=True):
-            date_part = p.stem.replace("email_summary_", "")
-            try:
-                d = date.fromisoformat(date_part)
-                label = d.strftime("%B %d, %Y")
-            except ValueError:
-                label = date_part
-            files.append({"filename": p.name, "label": label, "date": date_part})
-    return files
-
-
 # ── Pages ─────────────────────────────────────────────────────────────────────
 
 @app.route("/")
 def dashboard():
     rules = _load_rules()
-    labels = rules.get("labels", [])
-    label_count = len(labels)
-    rules_count = sum(
-        len(entry.get("emailAddresses", [])) + len(entry.get("emailDomains", []))
-        for entry in labels
-    )
-    all_summaries = _summary_files()
-    summary_count = len(all_summaries)
-    existing_dates = {f["date"] for f in all_summaries}
-
     today = date.today()
-    recent_days = []
-    for i in range(7):
-        d = today - timedelta(days=i)
-        date_str = d.isoformat()
-        if i == 0:
-            label = "Today"
-        elif i == 1:
-            label = "Yesterday"
-        else:
-            label = f"{d.strftime('%a, %b')} {d.day}"
-        has_summary = date_str in existing_dates
-        recent_days.append({
-            "date": date_str,
-            "label": label,
-            "has_summary": has_summary,
-            "filename": f"email_summary_{date_str}.html" if has_summary else None,
-        })
+    stats = dashboard_stats(rules, SUMMARY_DIR, today)
 
     return render_template(
         "dashboard.html",
-        label_count=label_count,
-        rules_count=rules_count,
-        summary_count=summary_count,
-        recent_days=recent_days,
+        label_count=stats["label_count"],
+        rules_count=stats["rules_count"],
+        summary_count=stats["summary_count"],
+        recent_days=stats["recent_days"],
         today=today.isoformat(),
     )
 
 
 @app.route("/summaries")
 def summaries():
-    files = _summary_files()
+    files = summary_files(SUMMARY_DIR)
     return render_template("summaries.html", files=files)
 
 
@@ -509,19 +473,9 @@ def api_cleanup_collapse_domain():
 
     data = _load_rules()
     # M8: refuse to collapse if there's no domain rule to take over routing
-    has_domain_rule = any(
-        domain in entry.get("emailDomains", [])
-        for entry in data.get("labels", [])
-    )
-    if not has_domain_rule:
+    removed = collapse_domain_rule(data, domain)
+    if removed is None:
         return jsonify({"ok": False, "error": f"No domain rule found for @{domain}"}), 400
-
-    removed = 0
-    for entry in data.get("labels", []):
-        addrs = entry.get("emailAddresses", [])
-        before = len(addrs)
-        entry["emailAddresses"] = [a for a in addrs if not a.lower().endswith(f"@{domain}")]
-        removed += before - len(entry["emailAddresses"])
 
     if removed:
         _save_rules(data)
@@ -538,14 +492,7 @@ def api_cleanup_resolve_duplicate():
         return jsonify({"ok": False, "error": "Missing address or keep_label"}), 400
 
     data = _load_rules()
-    removed = 0
-    for entry in data.get("labels", []):
-        if entry["labelName"] == keep_label:
-            continue
-        addrs = entry.get("emailAddresses", [])
-        if address in addrs:
-            addrs.remove(address)
-            removed += 1
+    removed = resolve_duplicate_address(data, address, keep_label)
 
     if removed:
         _save_rules(data)

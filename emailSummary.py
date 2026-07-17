@@ -294,7 +294,7 @@ Rules:
     try:
         with client.messages.stream(
             model="claude-opus-4-8",
-            max_tokens=4096,
+            max_tokens=64000,
             thinking={"type": "adaptive"},
             messages=[{"role": "user", "content": prompt}],
         ) as stream:
@@ -330,8 +330,10 @@ Rules:
         except json.JSONDecodeError as exc:
             log.warning("Could not parse Claude JSON response: %s", exc)
 
-    log.warning("Claude did not return valid JSON. Raw response:\n%s", text[:500])
-    return {'action_required': [], 'filing_suggestions': []}
+    log.warning("Claude did not return valid JSON (stop_reason=%s). Raw response:\n%s",
+                response.stop_reason, text[:500])
+    return {'action_required': [], 'filing_suggestions': [],
+            '_error': f'AI response was empty or malformed (stop_reason={response.stop_reason})'}
 
 
 # ── HTML report builder ───────────────────────────────────────────────────────

@@ -48,6 +48,34 @@ Mode 7 — collapse a domain's sender rules into one domain-glob rule:
                             --domain example.com \
                             --full-label "MailMatrixCategories/Work"
     → {"ok":true}
+
+Mode 8 — dashboard stats (label/rule/summary counts + 7-day summary grid):
+    python inboxAnalysis.py --dashboard-stats
+    → {"ok":true, "inbox_count":N, "connected":true,
+       "label_count":N, "rules_count":N, "summary_count":N,
+       "recent_days":[{"date":"2026-07-16","label":"Today",
+                        "has_summary":false,"filename":null}, ...]}
+
+Mode 9 — list all saved summary reports (for the Summaries screen):
+    python inboxAnalysis.py --summaries-list
+    → {"ok":true, "files":[{"filename":"email_summary_2026-07-16.html",
+                             "label":"July 16, 2026","date":"2026-07-16"}, ...]}
+
+Mode 10 — cleanup scan (domain-collapse + duplicate-address opportunities):
+    python inboxAnalysis.py --cleanup-scan
+    → {"ok":true, "collapses":[...], "duplicates":[...]}
+
+Mode 11 — collapse a domain's redundant individual sender rules (the domain
+rule already covers them):
+    python inboxAnalysis.py --cleanup-collapse-domain --domain example.com
+    → {"ok":true, "removed":N}
+
+Mode 12 — resolve a duplicate address by keeping one label and removing the
+others:
+    python inboxAnalysis.py --cleanup-resolve-duplicate \
+                            --from-addr user@example.com \
+                            --keep-label "MailMatrixCategories/Work"
+    → {"ok":true, "removed":N}
 """
 
 import argparse
@@ -66,10 +94,14 @@ _SCRIPT_DIR = Path(__file__).parent
 if str(_SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPT_DIR))
 
+from datetime import date
+
 from commonFunctions import (
     build_rule_groups,
+    collapse_domain_rule,
     connect_to_imap,
     convert_domain_rule,
+    dashboard_stats,
     delete_rule,
     extract_email_address,
     full_label_name,
@@ -79,12 +111,15 @@ from commonFunctions import (
     load_rules_file,
     move_imap_messages,
     parse_headers,
+    resolve_duplicate_address,
     save_rules_file,
     setup_logging,
+    summary_files,
     update_sender_rule,
     validate_email_address,
     validate_label,
 )
+from cleanupRules import find_domain_collapsible, find_duplicate_addresses
 from emailSummary import accept_filing, analyze_with_claude, deduplicate_inbox_emails
 
 RULES_PATH = _SCRIPT_DIR / "emailRules.json"
@@ -120,6 +155,56 @@ def stats_only() -> dict:
     except Exception as exc:
         log.error("stats_only failed: %s", exc)
         return {"ok": False, "inbox_count": -1, "connected": False, "error": str(exc)}
+
+
+# ── Mode 8: dashboard stats ───────────────────────────────────────────────────
+
+def dashboard_stats_mode() -> dict:
+    stats = stats_only()
+    rules = load_rules_file(RULES_PATH)
+    stats.update(dashboard_stats(rules, RULES_PATH.parent / "emailSummary", date.today()))
+    return stats
+
+
+# ── Mode 9: list saved summary reports ────────────────────────────────────────
+
+def summaries_list_mode() -> dict:
+    return {"ok": True, "files": summary_files(RULES_PATH.parent / "emailSummary")}
+
+
+# ── Mode 10: cleanup scan ──────────────────────────────────────────────────────
+
+def cleanup_scan_mode() -> dict:
+    data = load_rules_file(RULES_PATH)
+    return {
+        "ok": True,
+        "collapses": find_domain_collapsible(data),
+        "duplicates": find_duplicate_addresses(data),
+    }
+
+
+# ── Mode 11: cleanup collapse-domain ──────────────────────────────────────────
+
+def cleanup_collapse_domain_mode(domain: str) -> dict:
+    data = load_rules_file(RULES_PATH)
+    removed = collapse_domain_rule(data, domain)
+    if removed is None:
+        return {"ok": False, "error": f"No domain rule found for @{domain}"}
+    if removed:
+        save_rules_file(RULES_PATH, data)
+    log.info("Domain collapse *@%s: removed %d sender rule(s)", domain, removed)
+    return {"ok": True, "removed": removed}
+
+
+# ── Mode 12: cleanup resolve-duplicate ────────────────────────────────────────
+
+def cleanup_resolve_duplicate_mode(address: str, keep_label: str) -> dict:
+    data = load_rules_file(RULES_PATH)
+    removed = resolve_duplicate_address(data, address, keep_label)
+    if removed:
+        save_rules_file(RULES_PATH, data)
+    log.info("Duplicate resolved: kept <%s> in %s, removed from %d label(s)", address, keep_label, removed)
+    return {"ok": True, "removed": removed}
 
 
 # ── Mode 1: full analysis ─────────────────────────────────────────────────────
@@ -297,9 +382,19 @@ def main():
                         help="Move a sender to a different label (and matching messages over IMAP)")
     parser.add_argument("--rules-convert-domain", action="store_true",
                         help="Collapse a domain's sender rules into one domain-glob rule")
+    parser.add_argument("--dashboard-stats", action="store_true",
+                        help="Label/rule/summary counts + 7-day summary grid (for the Dashboard screen)")
+    parser.add_argument("--summaries-list", action="store_true",
+                        help="List all saved summary reports (for the Summaries screen)")
+    parser.add_argument("--cleanup-scan", action="store_true",
+                        help="Scan for domain-collapse and duplicate-address cleanup opportunities")
+    parser.add_argument("--cleanup-collapse-domain", action="store_true",
+                        help="Remove individual sender rules already covered by a domain rule")
+    parser.add_argument("--cleanup-resolve-duplicate", action="store_true",
+                        help="Keep one label for a duplicated address and remove the others")
     parser.add_argument("--from-addr", metavar="EMAIL",
-                        help="Sender address (required with --accept, --rules-update-sender; "
-                             "used by --rules-delete --type sender)")
+                        help="Sender address (required with --accept, --rules-update-sender, "
+                             "--cleanup-resolve-duplicate; used by --rules-delete --type sender)")
     parser.add_argument("--label", metavar="LABEL",
                         help="Target label (required with --accept)")
     parser.add_argument("--type", choices=["sender", "domain"],
@@ -309,12 +404,15 @@ def main():
                              "(required with --rules-delete, --rules-convert-domain)")
     parser.add_argument("--domain", metavar="DOMAIN",
                         help="Sender domain (used by --rules-delete --type domain, "
-                             "required with --rules-convert-domain)")
+                             "required with --rules-convert-domain, --cleanup-collapse-domain)")
     parser.add_argument("--old-full-label", metavar="LABEL",
                         help="Sender's current fully-qualified label (required with --rules-update-sender)")
     parser.add_argument("--new-label", metavar="LABEL",
                         help="Label to move the sender to, bare or fully-qualified "
                              "(required with --rules-update-sender)")
+    parser.add_argument("--keep-label", metavar="LABEL",
+                        help="Label to keep for a duplicated address "
+                             "(required with --cleanup-resolve-duplicate)")
     args = parser.parse_args()
 
     if args.stats_only:
@@ -347,6 +445,24 @@ def main():
                       "error": "--domain and --full-label are required with --rules-convert-domain"}
         else:
             result = rules_convert_domain_mode(args.domain, args.full_label)
+    elif args.dashboard_stats:
+        result = dashboard_stats_mode()
+    elif args.summaries_list:
+        result = summaries_list_mode()
+    elif args.cleanup_scan:
+        result = cleanup_scan_mode()
+    elif args.cleanup_collapse_domain:
+        if not args.domain:
+            result = {"ok": False,
+                      "error": "--domain is required with --cleanup-collapse-domain"}
+        else:
+            result = cleanup_collapse_domain_mode(args.domain)
+    elif args.cleanup_resolve_duplicate:
+        if not args.from_addr or not args.keep_label:
+            result = {"ok": False,
+                      "error": "--from-addr and --keep-label are required with --cleanup-resolve-duplicate"}
+        else:
+            result = cleanup_resolve_duplicate_mode(args.from_addr, args.keep_label)
     else:
         result = full_analysis()
 
