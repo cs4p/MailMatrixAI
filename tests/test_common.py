@@ -12,6 +12,7 @@ from commonFunctions import (
     dashboard_stats,
     decode_header_value,
     delete_rule,
+    extract_body_snippet,
     extract_email_address,
     full_label_name,
     get_all_labels,
@@ -182,6 +183,20 @@ def test_imap_call_raises_after_max_retries():
             imap_call(always_rate_limited)
 
 
+def test_imap_call_logs_error_when_giving_up_after_max_retries(caplog):
+    def always_rate_limited():
+        raise imaplib.IMAP4.error("throttled by server")
+
+    with patch("commonFunctions.time.sleep"), caplog.at_level("ERROR"):
+        with pytest.raises(imaplib.IMAP4.error):
+            imap_call(always_rate_limited)
+
+    assert any(
+        r.levelname == "ERROR" and "giving up" in r.message.lower() and "rate-limited" in r.message.lower()
+        for r in caplog.records
+    )
+
+
 def test_imap_call_raises_non_rate_limit_immediately():
     calls = {"n": 0}
 
@@ -193,6 +208,17 @@ def test_imap_call_raises_non_rate_limit_immediately():
         imap_call(non_rate_limit)
 
     assert calls["n"] == 1  # no retry
+
+
+def test_imap_call_logs_error_for_non_rate_limit_failure(caplog):
+    def non_rate_limit():
+        raise imaplib.IMAP4.error("LOGIN failed: invalid credentials")
+
+    with caplog.at_level("ERROR"):
+        with pytest.raises(imaplib.IMAP4.error):
+            imap_call(non_rate_limit)
+
+    assert any(r.levelname == "ERROR" and "IMAP call failed" in r.message for r in caplog.records)
 
 
 def test_imap_call_retries_on_no_status_with_rate_limit_phrase():
@@ -223,6 +249,44 @@ def test_connect_to_imap_calls_ssl_and_login():
     MockSSL.assert_called_once_with("imap.gmail.com", 993)
     mock_imap_instance.login.assert_called_once_with("user@gmail.com", "password")
     assert result is mock_imap_instance
+
+
+def test_connect_to_imap_logs_success_at_info(caplog):
+    mock_imap_instance = MagicMock()
+    mock_imap_instance.login.return_value = ("OK", [b"Logged in"])
+
+    with patch("imaplib.IMAP4_SSL", return_value=mock_imap_instance), caplog.at_level("INFO"):
+        connect_to_imap("imap.gmail.com", "user@gmail.com", "password", 993)
+
+    assert any("Connecting to IMAP" in r.message for r in caplog.records)
+    assert any("login succeeded" in r.message for r in caplog.records)
+
+
+def test_connect_to_imap_logs_rate_limit_error_distinctly(caplog):
+    mock_imap_instance = MagicMock()
+    mock_imap_instance.login.side_effect = imaplib.IMAP4.error("Too many login attempts, slow down")
+
+    with patch("imaplib.IMAP4_SSL", return_value=mock_imap_instance), caplog.at_level("ERROR"):
+        with pytest.raises(imaplib.IMAP4.error):
+            connect_to_imap("imap.gmail.com", "user@gmail.com", "password", 993)
+
+    assert any(
+        r.levelname == "ERROR" and "rate-limited" in r.message.lower()
+        for r in caplog.records
+    )
+
+
+def test_connect_to_imap_logs_non_rate_limit_error_distinctly(caplog):
+    mock_imap_instance = MagicMock()
+    mock_imap_instance.login.side_effect = imaplib.IMAP4.error("Invalid credentials")
+
+    with patch("imaplib.IMAP4_SSL", return_value=mock_imap_instance), caplog.at_level("ERROR"):
+        with pytest.raises(imaplib.IMAP4.error):
+            connect_to_imap("imap.gmail.com", "user@gmail.com", "password", 993)
+
+    errors = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert any("login failed" in r.message.lower() for r in errors)
+    assert not any("rate-limited" in r.message.lower() for r in errors)
 
 
 # ── full_label_name ───────────────────────────────────────────────────────────
@@ -487,3 +551,60 @@ def test_resolve_duplicate_address_removes_from_other_labels():
 def test_resolve_duplicate_address_no_op_when_not_duplicated(rules_data):
     removed = resolve_duplicate_address(rules_data, "boss@work.com", "MailMatrixCategories/Work")
     assert removed == 0
+
+
+# ── extract_body_snippet ───────────────────────────────────────────────────────
+
+def test_extract_body_snippet_plain_message_no_content_type():
+    header_bytes = b"From: a@b.com\r\nSubject: Hi\r\n\r\n"
+    body_bytes = b"Just plain text here."
+    assert extract_body_snippet(header_bytes, body_bytes) == "Just plain text here."
+
+
+def test_extract_body_snippet_multipart_prefers_decoded_plain_text_over_mime_markup():
+    header_bytes = b'Content-Type: multipart/alternative; boundary="BOUNDARY123"\r\n\r\n'
+    body_bytes = (
+        b'--BOUNDARY123\r\n'
+        b'Content-Type: text/plain; charset="utf-8"\r\n'
+        b'Content-Transfer-Encoding: quoted-printable\r\n'
+        b'\r\n'
+        b'Hi there,=0D=0AThis has an em dash =E2=80=94 in it.\r\n'
+        b'--BOUNDARY123\r\n'
+        b'Content-Type: text/html; charset="utf-8"\r\n'
+        b'\r\n'
+        b'<html><body><p>Hi there</p></body></html>\r\n'
+        b'--BOUNDARY123--\r\n'
+    )
+    snippet = extract_body_snippet(header_bytes, body_bytes)
+    assert "Content-Type" not in snippet
+    assert "BOUNDARY123" not in snippet
+    assert "Hi there, This has an em dash — in it." in snippet
+
+
+def test_extract_body_snippet_decodes_base64_part():
+    import base64
+    plain = b"This is a base64 encoded message body for testing purposes."
+    encoded = base64.b64encode(plain)
+    header_bytes = b'Content-Type: multipart/mixed; boundary="B2"\r\n\r\n'
+    body_bytes = (
+        b'--B2\r\n'
+        b'Content-Type: text/plain; charset="utf-8"\r\n'
+        b'Content-Transfer-Encoding: base64\r\n'
+        b'\r\n'
+        + encoded + b'\r\n'
+        + b'--B2--\r\n'
+    )
+    assert extract_body_snippet(header_bytes, body_bytes) == plain.decode()
+
+
+def test_extract_body_snippet_strips_html_when_no_plain_part():
+    header_bytes = b'Content-Type: text/html; charset="utf-8"\r\n\r\n'
+    body_bytes = b"<html><body><p>Hello <b>World</b></p></body></html>"
+    assert extract_body_snippet(header_bytes, body_bytes) == "Hello World"
+
+
+def test_extract_body_snippet_truncates_to_max_len():
+    header_bytes = b"From: a@b.com\r\n\r\n"
+    body_bytes = b"x" * 1000
+    snippet = extract_body_snippet(header_bytes, body_bytes, max_len=50)
+    assert snippet == "x" * 50

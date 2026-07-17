@@ -81,7 +81,6 @@ others:
 import argparse
 import json
 import logging
-import re
 import sys
 from pathlib import Path
 
@@ -103,6 +102,7 @@ from commonFunctions import (
     convert_domain_rule,
     dashboard_stats,
     delete_rule,
+    extract_body_snippet,
     extract_email_address,
     full_label_name,
     get_all_labels,
@@ -236,11 +236,12 @@ def full_analysis() -> dict:
         for msg_id in msg_ids:
             try:
                 st, raw = _imap_call(
-                    lambda mid=msg_id: imap.fetch(mid, "(BODY[HEADER.FIELDS (FROM SUBJECT DATE)])")
+                    lambda mid=msg_id: imap.fetch(mid, "(BODY[HEADER.FIELDS (FROM SUBJECT DATE CONTENT-TYPE)])")
                 )
                 if st != "OK" or not raw or not raw[0]:
                     continue
-                headers = parse_headers(raw[0][1].decode(errors="replace"))
+                header_bytes = raw[0][1]
+                headers = parse_headers(header_bytes.decode(errors="replace"))
 
                 snippet = ""
                 try:
@@ -250,10 +251,7 @@ def full_analysis() -> dict:
                     if st2 == "OK" and body_data and body_data[0] and isinstance(body_data[0], tuple):
                         raw_body = body_data[0][1]
                         if raw_body:
-                            text = raw_body.decode(errors="replace")
-                            text = re.sub(r"<[^>]+>", " ", text)
-                            text = re.sub(r"\s+", " ", text).strip()
-                            snippet = text[:400]
+                            snippet = extract_body_snippet(header_bytes, raw_body)
                 except Exception:
                     pass
 

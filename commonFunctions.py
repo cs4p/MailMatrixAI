@@ -1,3 +1,4 @@
+import email
 import imaplib
 import json
 import logging
@@ -9,6 +10,7 @@ import time
 from collections import defaultdict
 from datetime import date, timedelta
 from email.header import decode_header as _decode_header
+from email.message import Message
 from pathlib import Path
 from typing import Callable, List, Optional, Union
 
@@ -109,7 +111,7 @@ def credential_keys_in_keychain() -> set:
 def setup_logging(log_file: str) -> None:
     logging.basicConfig(
         level=logging.INFO,
-        format='%(asctime)s  %(levelname)-8s  %(message)s',
+        format='%(asctime)s  %(levelname)-8s  %(name)-14s  %(message)s',
         datefmt='%H:%M:%S',
         handlers=[logging.StreamHandler(), logging.FileHandler(log_file)],
     )
@@ -155,7 +157,12 @@ def imap_call(fn: Callable[[], tuple]) -> tuple:
                 raise imaplib.IMAP4.error(f"Rate limited: {data[0]}")
             return status, data
         except (imaplib.IMAP4.abort, imaplib.IMAP4.error) as e:
-            if not _is_rate_limit_error(e) or attempt == _MAX_RETRIES - 1:
+            if not _is_rate_limit_error(e):
+                log.error("IMAP call failed: %s", e)
+                raise
+            if attempt == _MAX_RETRIES - 1:
+                log.error("IMAP call still rate-limited after %d attempt(s), giving up: %s",
+                          _MAX_RETRIES, e)
                 raise
             delay = _BASE_DELAY * (2 ** attempt) + random.uniform(0, 1)
             log.warning("Rate limited, retrying in %.1fs (attempt %d/%d)...", delay, attempt + 1, _MAX_RETRIES)
@@ -164,8 +171,17 @@ def imap_call(fn: Callable[[], tuple]) -> tuple:
 
 
 def connect_to_imap(server: str, username: str, password: str, port: int = 993) -> imaplib.IMAP4_SSL:
-    imap = imaplib.IMAP4_SSL(server, port)
-    imap.login(username, password)
+    log.info("Connecting to IMAP %s:%d as %s", server, port, username)
+    try:
+        imap = imaplib.IMAP4_SSL(server, port)
+        imap.login(username, password)
+    except (imaplib.IMAP4.error, imaplib.IMAP4.abort, OSError) as exc:
+        if _is_rate_limit_error(exc):
+            log.error("IMAP login rate-limited for %s: %s", username, exc)
+        else:
+            log.error("IMAP login failed for %s: %s", username, exc)
+        raise
+    log.info("IMAP login succeeded for %s", username)
     return imap
 
 
@@ -233,6 +249,61 @@ def parse_headers(raw: str) -> dict:
         result[current_key] = decode_header_value(' '.join(current_val))
 
     return result
+
+
+def _decode_mime_part(part: Message) -> str:
+    """Decode a MIME part's payload (quoted-printable/base64-aware) to text."""
+    try:
+        payload = part.get_payload(decode=True)
+    except Exception:
+        payload = None
+    if not payload:
+        raw = part.get_payload(decode=False)
+        return raw if isinstance(raw, str) else ""
+    charset = part.get_content_charset() or "utf-8"
+    try:
+        return payload.decode(charset, errors="replace")
+    except (LookupError, UnicodeDecodeError):
+        return payload.decode("utf-8", errors="replace")
+
+
+def extract_body_snippet(header_bytes: bytes, body_bytes: bytes, max_len: int = 400) -> str:
+    """Build a clean preview snippet from a message's headers (used here only
+    for Content-Type) and its BODY[TEXT] bytes (often byte-range-truncated).
+
+    Properly decodes quoted-printable/base64 and prefers the message's
+    text/plain part over showing raw MIME boundary lines and part headers
+    as if they were message text — which is what a naive decode-and-strip-
+    HTML-tags approach produces for any multipart message.
+    """
+    text = ""
+    try:
+        msg = email.message_from_bytes(header_bytes + body_bytes)
+        if msg.is_multipart():
+            for part in msg.walk():
+                if part.get_content_maintype() == "multipart":
+                    continue
+                if part.get_content_type() in ("text/plain", "text/html"):
+                    candidate = _decode_mime_part(part)
+                    if part.get_content_type() == "text/html":
+                        candidate = re.sub(r"<[^>]+>", " ", candidate)
+                    if candidate.strip():
+                        text = candidate
+                        break
+        else:
+            text = _decode_mime_part(msg)
+            if msg.get_content_type() == "text/html":
+                text = re.sub(r"<[^>]+>", " ", text)
+    except Exception:
+        text = ""
+
+    if not text.strip():
+        # Fall back to a raw decode if MIME parsing didn't yield anything usable
+        text = body_bytes.decode(errors="replace")
+        text = re.sub(r"<[^>]+>", " ", text)
+
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:max_len]
 
 
 def imap_date(d: date) -> str:

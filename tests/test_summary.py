@@ -1,6 +1,7 @@
 import json
+import os
 import sys
-from datetime import date
+from datetime import date, datetime
 from unittest.mock import MagicMock, call, mock_open, patch
 
 import anthropic
@@ -8,10 +9,12 @@ import httpx
 import pytest
 
 from emailSummary import (
+    ReportGenerationError,
     accept_filing,
     analyze_with_claude,
     build_html_report,
     deduplicate_inbox_emails,
+    generate_report,
 )
 
 
@@ -34,6 +37,9 @@ def _mock_anthropic_stream(response_text: str):
     mock_stream = MagicMock()
     mock_response = MagicMock()
     mock_response.content = [MagicMock(type="text", text=response_text)]
+    mock_response.stop_reason = "end_turn"
+    mock_response.usage.input_tokens = 123
+    mock_response.usage.output_tokens = 45
     mock_stream.get_final_message.return_value = mock_response
 
     mock_cm = MagicMock()
@@ -132,6 +138,25 @@ def test_build_html_report_shows_action_item():
 def test_build_html_report_empty_action_items_shows_placeholder():
     html = build_html_report(date(2026, 6, 28), [], {}, {"action_required": [], "filing_suggestions": []})
     assert "No emails require immediate action" in html
+
+
+def test_build_html_report_shows_generated_at_timestamp():
+    html = build_html_report(
+        date(2026, 6, 28), [], {}, {"action_required": [], "filing_suggestions": []},
+        generated_at=datetime(2026, 6, 28, 9, 5),
+    )
+    assert "Generated Jun 28, 2026 at 09:05 AM" in html
+
+
+def test_build_html_report_defaults_generated_at_to_now():
+    html = build_html_report(date(2026, 6, 28), [], {}, {"action_required": [], "filing_suggestions": []})
+    assert "Generated" in html
+
+
+def test_build_html_report_refresh_button_carries_target_date():
+    html = build_html_report(date(2026, 6, 28), [], {}, {"action_required": [], "filing_suggestions": []})
+    assert 'data-date="2026-06-28"' in html
+    assert 'onclick="refreshReport(this)"' in html
 
 
 def test_build_html_report_unmatched_email_card():
@@ -285,6 +310,45 @@ def test_analyze_with_claude_handles_auth_error():
     assert "API key" in result["_error"]
 
 
+def test_analyze_with_claude_logs_success_with_token_usage(caplog):
+    response_json = json.dumps({"action_required": [], "filing_suggestions": []})
+
+    with patch("emailSummary.anthropic.Anthropic") as MockAnthropic, caplog.at_level("INFO"):
+        mock_client = MagicMock()
+        MockAnthropic.return_value = mock_client
+        mock_client.messages.stream.return_value = _mock_anthropic_stream(response_json)
+
+        emails = [_make_email("a@b.com")]
+        analyze_with_claude(emails, [])
+
+    assert any(
+        "Claude response received" in r.message and "input_tokens=123" in r.message and "output_tokens=45" in r.message
+        for r in caplog.records
+    )
+
+
+def test_analyze_with_claude_handles_rate_limit(caplog):
+    req = _anthropic_request()
+    resp = httpx.Response(429, request=req, headers={"retry-after": "30"})
+    exc = anthropic.RateLimitError(message="Rate limited", response=resp, body={})
+
+    with patch("emailSummary.anthropic.Anthropic") as MockAnthropic, caplog.at_level("ERROR"):
+        mock_client = MagicMock()
+        MockAnthropic.return_value = mock_client
+        mock_client.messages.stream.side_effect = exc
+
+        emails = [_make_email("a@b.com")]
+        result = analyze_with_claude(emails, [])
+
+    assert result["action_required"] == []
+    assert result["filing_suggestions"] == []
+    assert "rate limit" in result["_error"].lower()
+    assert any(
+        r.levelname == "ERROR" and "rate limited" in r.message.lower() and "30" in r.message
+        for r in caplog.records
+    )
+
+
 def test_analyze_with_claude_handles_no_credits():
     req = _anthropic_request()
     resp = httpx.Response(402, request=req)
@@ -423,6 +487,60 @@ def test_accept_filing_no_messages_to_move(mock_imap, tmp_path):
     assert result["moved"] == 0
     mock_imap.copy.assert_not_called()
     mock_imap.expunge.assert_not_called()
+
+
+# ── generate_report ────────────────────────────────────────────────────────────
+
+def test_generate_report_raises_when_credentials_missing(monkeypatch):
+    monkeypatch.delenv("IMAP_SERVER", raising=False)
+    monkeypatch.delenv("IMAP_USERNAME", raising=False)
+    monkeypatch.delenv("IMAP_PASSWORD", raising=False)
+
+    with pytest.raises(ReportGenerationError):
+        generate_report(date(2026, 6, 28), run_sort=False)
+
+
+def test_generate_report_returns_expected_shape(mock_imap, tmp_path, monkeypatch):
+    monkeypatch.setenv("IMAP_SERVER", "imap.test.com")
+    monkeypatch.setenv("IMAP_PORT", "993")
+    monkeypatch.setenv("IMAP_USERNAME", "user@test.com")
+    monkeypatch.setenv("IMAP_PASSWORD", "pass")
+
+    with (
+        patch("emailSummary.connect_to_imap", return_value=mock_imap),
+        patch("emailSummary.get_all_labels", return_value=["MailMatrixCategories/Work"]),
+        patch("emailSummary.fetch_folder_emails", return_value=[]),
+        patch("emailSummary.fetch_inbox_with_body", return_value=[]),
+        patch("emailSummary.analyze_with_claude",
+              return_value={"action_required": [{"index": 1}], "filing_suggestions": []}),
+        patch("emailSummary._SCRIPT_DIR", str(tmp_path)),
+    ):
+        result = generate_report(date(2026, 6, 28), run_sort=False)
+
+    assert result["unmatched"] == 0
+    assert result["action_required"] == 1
+    assert result["filed"] == 0
+    assert result["output_file"] == str(tmp_path / "emailSummary" / "email_summary_2026-06-28.html")
+    assert os.path.exists(result["output_file"])
+    assert "Generated" in result["html"]
+
+
+def test_generate_report_skips_sort_when_run_sort_false(mock_imap, tmp_path, monkeypatch):
+    monkeypatch.setenv("IMAP_SERVER", "imap.test.com")
+    monkeypatch.setenv("IMAP_USERNAME", "user@test.com")
+    monkeypatch.setenv("IMAP_PASSWORD", "pass")
+
+    with (
+        patch("emailSummary.subprocess.run") as mock_run,
+        patch("emailSummary.connect_to_imap", return_value=mock_imap),
+        patch("emailSummary.get_all_labels", return_value=[]),
+        patch("emailSummary.fetch_inbox_with_body", return_value=[]),
+        patch("emailSummary.analyze_with_claude", return_value={"action_required": [], "filing_suggestions": []}),
+        patch("emailSummary._SCRIPT_DIR", str(tmp_path)),
+    ):
+        generate_report(date(2026, 6, 28), run_sort=False)
+
+    mock_run.assert_not_called()
 
 
 # ── main() — sort-before-summary behaviour ────────────────────────────────────

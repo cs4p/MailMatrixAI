@@ -1,5 +1,4 @@
 import logging
-import re
 import subprocess
 import sys
 import threading
@@ -20,6 +19,7 @@ from commonFunctions import (
     credential_keys_in_keychain,
     dashboard_stats,
     delete_rule,
+    extract_body_snippet,
     extract_email_address,
     full_label_name,
     get_all_labels,
@@ -397,11 +397,12 @@ def _analyze_inbox() -> dict:
         for msg_id in msg_ids:
             try:
                 st, raw_data = _imap_call(
-                    lambda mid=msg_id: imap.fetch(mid, "(BODY[HEADER.FIELDS (FROM SUBJECT DATE)])")
+                    lambda mid=msg_id: imap.fetch(mid, "(BODY[HEADER.FIELDS (FROM SUBJECT DATE CONTENT-TYPE)])")
                 )
                 if st != "OK" or not raw_data or not raw_data[0]:
                     continue
-                headers = parse_headers(raw_data[0][1].decode(errors="replace"))
+                header_bytes = raw_data[0][1]
+                headers = parse_headers(header_bytes.decode(errors="replace"))
 
                 snippet = ""
                 try:
@@ -411,10 +412,7 @@ def _analyze_inbox() -> dict:
                     if st2 == "OK" and body_data and body_data[0] and isinstance(body_data[0], tuple):
                         raw_body = body_data[0][1]
                         if raw_body:
-                            text = raw_body.decode(errors="replace")
-                            text = re.sub(r"<[^>]+>", " ", text)
-                            text = re.sub(r"\s+", " ", text).strip()
-                            snippet = text[:400]
+                            snippet = extract_body_snippet(header_bytes, raw_body)
                 except Exception:
                     pass
 

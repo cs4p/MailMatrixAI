@@ -41,7 +41,20 @@ body {
   max-width: 860px; margin: 0 auto; padding: 2rem 1.5rem;
   background: #f5f5f7; color: #1d1d1f; line-height: 1.5;
 }
-h1 { font-size: 1.75rem; font-weight: 700; margin: 0 0 1.5rem; }
+h1 { font-size: 1.75rem; font-weight: 700; margin: 0 0 .5rem; }
+.report-meta {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 1rem; flex-wrap: wrap; margin-bottom: 1.5rem;
+}
+.generated-at { font-size: .8rem; color: #86868b; }
+.refresh-btn {
+  padding: .35rem .9rem; background: #0066cc; color: white;
+  border: none; border-radius: 8px; cursor: pointer;
+  font-size: .8rem; font-weight: 600; white-space: nowrap;
+  transition: background .15s, transform .1s;
+}
+.refresh-btn:hover:not(:disabled) { background: #0052a3; transform: translateY(-1px); }
+.refresh-btn:disabled { background: #99c2e8; cursor: default; transform: none; }
 .stat-bar { display: flex; gap: 1rem; margin-bottom: 2rem; flex-wrap: wrap; }
 .stat {
   background: white; padding: 1rem 1.5rem; border-radius: 12px;
@@ -145,6 +158,31 @@ async function handleAccept(btn) {
     btn.disabled = false;
     btn.textContent = 'Accept';
     if (select) select.disabled = false;
+    alert('Error: ' + err.message);
+  }
+}
+
+async function refreshReport(btn) {
+  const dateStr = btn.dataset.date;
+  btn.disabled = true;
+  btn.textContent = 'Refreshing…';
+  try {
+    const res = await fetch('/api/generate-summary', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest'},
+      body: JSON.stringify({date: dateStr})
+    });
+    const data = await res.json();
+    if (data.ok) {
+      location.reload();
+    } else {
+      btn.disabled = false;
+      btn.textContent = 'Refresh';
+      alert('Error: ' + (data.error || 'Unknown error'));
+    }
+  } catch (err) {
+    btn.disabled = false;
+    btn.textContent = 'Refresh';
     alert('Error: ' + err.message);
   }
 }
@@ -303,6 +341,14 @@ Rules:
         log.error("Anthropic API key is invalid — check ANTHROPIC_API_KEY in macOS Keychain")
         return {'action_required': [], 'filing_suggestions': [],
                 '_error': 'Invalid API key — check ANTHROPIC_API_KEY in macOS Keychain'}
+    except anthropic.RateLimitError as exc:
+        retry_after = exc.response.headers.get("retry-after") if exc.response is not None else None
+        if retry_after:
+            log.error("Anthropic API rate limited (429); retry after %ss: %s", retry_after, exc.message)
+        else:
+            log.error("Anthropic API rate limited (429): %s", exc.message)
+        return {'action_required': [], 'filing_suggestions': [],
+                '_error': 'Rate limited by Anthropic API — try again in a moment'}
     except anthropic.APIStatusError as exc:
         if exc.status_code == 402:
             log.error("Anthropic account has no remaining credits — skipping AI analysis")
@@ -315,6 +361,9 @@ Rules:
         log.error("Could not connect to Anthropic API: %s", exc)
         return {'action_required': [], 'filing_suggestions': [],
                 '_error': 'Could not connect to Anthropic API — check your internet connection'}
+
+    log.info("Claude response received (stop_reason=%s, input_tokens=%d, output_tokens=%d)",
+              response.stop_reason, response.usage.input_tokens, response.usage.output_tokens)
 
     text = next((b.text for b in response.content if b.type == "text"), "")
 
@@ -344,7 +393,9 @@ def build_html_report(
     filed_emails: Dict[str, List[dict]],
     analysis: dict,
     available_labels: Optional[List[str]] = None,
+    generated_at: Optional[datetime] = None,
 ) -> str:
+    generated_at = generated_at or datetime.now()
     total_filed = sum(len(v) for v in filed_emails.values())
     action_items = analysis.get('action_required', [])
     filing_suggestions = {
@@ -449,6 +500,7 @@ def build_html_report(
         filed_html = '<p class="empty">No emails were filed on this date.</p>'
 
     date_heading = f"{target_date.strftime('%B')} {target_date.day}, {target_date.year}"
+    generated_heading = generated_at.strftime('%b %d, %Y at %I:%M %p')
 
     return (
         f'<!DOCTYPE html>\n<html lang="en">\n<head>\n'
@@ -458,6 +510,11 @@ def build_html_report(
         f'  <style>{_CSS}</style>\n'
         f'</head>\n<body>\n'
         f'  <h1>Email Summary — {date_heading}</h1>\n'
+        f'  <div class="report-meta">\n'
+        f'    <span class="generated-at">Generated {_e(generated_heading)}</span>\n'
+        f'    <button class="refresh-btn" data-date="{target_date.isoformat()}"'
+        f' onclick="refreshReport(this)">↻ Refresh</button>\n'
+        f'  </div>\n'
         f'  <div class="stat-bar">\n'
         f'    <div class="stat"><div class="stat-num orange">{len(inbox_emails)}</div>'
         f'<div class="stat-label">Unmatched</div></div>\n'
@@ -552,6 +609,93 @@ def accept_filing(
     return {'ok': True, 'moved': len(msg_ids)}
 
 
+# ── Report generation pipeline ────────────────────────────────────────────────
+
+class ReportGenerationError(Exception):
+    """Raised when a report can't be generated (e.g. credentials not configured)."""
+
+
+def generate_report(target_date: date, run_sort: bool = True) -> dict:
+    """Sort (optionally), fetch filed + unmatched-inbox emails for target_date,
+    analyze with Claude, build the HTML report, and save it to disk.
+
+    Returns {'html', 'output_file', 'unmatched', 'action_required', 'filed'}.
+    Raises ReportGenerationError if IMAP credentials aren't configured.
+    """
+    if run_sort:
+        # Sort inbox first so the summary reflects the post-filing state
+        sort_script = os.path.join(_SCRIPT_DIR, "sortEmail.py")
+        log.info("Running sortEmail.py before generating summary...")
+        sort_result = subprocess.run(
+            [sys.executable, sort_script],
+            capture_output=True, text=True, timeout=180,
+        )
+        if sort_result.returncode == 0:
+            log.info("Sort completed successfully")
+        else:
+            log.warning(
+                "sortEmail.py exited with code %d — continuing anyway: %s",
+                sort_result.returncode,
+                sort_result.stderr[-500:],
+            )
+
+    imap_server = get_credential("IMAP_SERVER")
+    imap_port = int(get_credential("IMAP_PORT", "993"))
+    username = get_credential("IMAP_USERNAME")
+    password = get_credential("IMAP_PASSWORD")
+    if not (imap_server and username and password):
+        raise ReportGenerationError(
+            "IMAP credentials not configured — set them via the web UI Config page"
+        )
+
+    log.info("Connecting to %s:%d ...", imap_server, imap_port)
+    imap = connect_to_imap(imap_server, username, password, imap_port)
+    log.info("Authenticated as %s", username)
+
+    date_filter = imap_date(target_date)
+
+    try:
+        labels = get_all_labels(imap, 'MailMatrixCategories')
+        log.info("Found %d MailMatrixCategories labels", len(labels))
+
+        filed_emails: Dict[str, List[dict]] = {}
+        for label in labels:
+            emails = fetch_folder_emails(imap, label, date_filter)
+            if emails:
+                filed_emails[label] = emails
+
+        raw_inbox = fetch_inbox_with_body(imap, date_filter)
+
+    finally:
+        imap.logout()
+
+    inbox_emails = deduplicate_inbox_emails(raw_inbox)
+    log.info("INBOX: %d messages, %d unique senders", len(raw_inbox), len(inbox_emails))
+
+    analysis = analyze_with_claude(inbox_emails, labels)
+
+    report = build_html_report(
+        target_date, inbox_emails, filed_emails, analysis, labels,
+        generated_at=datetime.now(),
+    )
+
+    # L5: anchor output to the script's directory, not CWD
+    output_dir = os.path.join(_SCRIPT_DIR, "emailSummary")
+    os.makedirs(output_dir, exist_ok=True)
+    output_file = os.path.join(output_dir, f"email_summary_{target_date.strftime('%Y-%m-%d')}.html")
+    with open(output_file, 'w', encoding='utf-8') as f:
+        f.write(report)
+    log.info("Report written to %s", output_file)
+
+    return {
+        'html': report,
+        'output_file': output_file,
+        'unmatched': len(inbox_emails),
+        'action_required': len(analysis.get('action_required', [])),
+        'filed': sum(len(v) for v in filed_emails.values()),
+    }
+
+
 # ── Local report server ───────────────────────────────────────────────────────
 
 def _free_port() -> int:
@@ -560,13 +704,14 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
-def serve_report(html: str, accept_fn: Callable[[dict], dict]) -> None:
+def serve_report(html: str, target_date: date, accept_fn: Callable[[dict], dict]) -> None:
     port = _free_port()
+    state = {'html': html}
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             if self.path == '/':
-                body = html.encode('utf-8')
+                body = state['html'].encode('utf-8')
                 self.send_response(200)
                 self.send_header('Content-Type', 'text/html; charset=utf-8')
                 self.send_header('Content-Length', str(len(body)))
@@ -583,6 +728,39 @@ def serve_report(html: str, accept_fn: Callable[[dict], dict]) -> None:
                 result = accept_fn(data)
                 payload = json.dumps(result).encode('utf-8')
                 self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+            elif self.path == '/api/generate-summary':
+                length = int(self.headers.get('Content-Length', 0))
+                try:
+                    body = json.loads(self.rfile.read(length)) if length else {}
+                except json.JSONDecodeError:
+                    body = {}
+                date_str = (body.get('date') or '').strip()
+                try:
+                    refresh_date = datetime.strptime(date_str, '%Y-%m-%d').date() if date_str else target_date
+                except ValueError:
+                    refresh_date = target_date
+
+                try:
+                    result = generate_report(refresh_date)
+                    state['html'] = result['html']
+                    status_code = 200
+                    payload = json.dumps({
+                        'ok': True,
+                        'filename': os.path.basename(result['output_file']),
+                    }).encode('utf-8')
+                except ReportGenerationError as exc:
+                    status_code = 400
+                    payload = json.dumps({'ok': False, 'error': str(exc)}).encode('utf-8')
+                except Exception as exc:
+                    log.error("Refresh failed: %s", exc)
+                    status_code = 500
+                    payload = json.dumps({'ok': False, 'error': str(exc)}).encode('utf-8')
+
+                self.send_response(status_code)
                 self.send_header('Content-Type', 'application/json')
                 self.send_header('Content-Length', str(len(payload)))
                 self.end_headers()
@@ -629,82 +807,32 @@ def main() -> None:
 
     log.info("Generating email summary for %s", target_date)
 
-    # Sort inbox first so the summary reflects the post-filing state
-    sort_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sortEmail.py")
-    log.info("Running sortEmail.py before generating summary...")
-    sort_result = subprocess.run(
-        [sys.executable, sort_script],
-        capture_output=True, text=True, timeout=180,
-    )
-    if sort_result.returncode == 0:
-        log.info("Sort completed successfully")
-    else:
-        log.warning(
-            "sortEmail.py exited with code %d — continuing anyway: %s",
-            sort_result.returncode,
-            sort_result.stderr[-500:],
-        )
-
-    imap_server = get_credential("IMAP_SERVER")
-    imap_port = int(get_credential("IMAP_PORT", "993"))
-    username = get_credential("IMAP_USERNAME")
-    password = get_credential("IMAP_PASSWORD")
-    rules_path = os.environ.get("RULES_PATH", os.path.join(_SCRIPT_DIR, "emailRules.json"))
-    if not (imap_server and username and password):
-        log.error("IMAP credentials not configured — set them via the web UI Config page")
+    try:
+        result = generate_report(target_date)
+    except ReportGenerationError as exc:
+        log.error(str(exc))
         sys.exit(1)
 
-    log.info("Connecting to %s:%d ...", imap_server, imap_port)
-    imap = connect_to_imap(imap_server, username, password, imap_port)
-    log.info("Authenticated as %s", username)
-
-    date_filter = imap_date(target_date)
-
-    try:
-        labels = get_all_labels(imap, 'MailMatrixCategories')
-        log.info("Found %d MailMatrixCategories labels", len(labels))
-
-        filed_emails: Dict[str, List[dict]] = {}
-        for label in labels:
-            emails = fetch_folder_emails(imap, label, date_filter)
-            if emails:
-                filed_emails[label] = emails
-
-        raw_inbox = fetch_inbox_with_body(imap, date_filter)
-
-    finally:
-        imap.logout()
-
-    inbox_emails = deduplicate_inbox_emails(raw_inbox)
-    log.info("INBOX: %d messages, %d unique senders", len(raw_inbox), len(inbox_emails))
-
-    analysis = analyze_with_claude(inbox_emails, labels)
-
-    report = build_html_report(target_date, inbox_emails, filed_emails, analysis, labels)
-
-    # L5: anchor output to the script's directory, not CWD
-    output_dir = os.path.join(_SCRIPT_DIR, "emailSummary")
-    os.makedirs(output_dir, exist_ok=True)
-    output_file = os.path.join(output_dir, f"email_summary_{target_date.strftime('%Y-%m-%d')}.html")
-    with open(output_file, 'w', encoding='utf-8') as f:
-        f.write(report)
-    log.info("Report written to %s", output_file)
-
-    total_filed = sum(len(v) for v in filed_emails.values())
-    print(f"Summary written to {output_file}")
+    print(f"Summary written to {result['output_file']}")
     print(
-        f"  {len(inbox_emails)} unique unmatched senders, "
-        f"{len(analysis.get('action_required', []))} action required, "
-        f"{total_filed} filed"
+        f"  {result['unmatched']} unique unmatched senders, "
+        f"{result['action_required']} action required, "
+        f"{result['filed']} filed"
     )
 
     if no_serve:
         return
 
+    rules_path = os.environ.get("RULES_PATH", os.path.join(_SCRIPT_DIR, "emailRules.json"))
     accept_fn = lambda body: accept_filing(
-        body, imap_server, imap_port, username, password, rules_path
+        body,
+        get_credential("IMAP_SERVER"),
+        int(get_credential("IMAP_PORT", "993")),
+        get_credential("IMAP_USERNAME"),
+        get_credential("IMAP_PASSWORD"),
+        rules_path,
     )
-    serve_report(report, accept_fn)
+    serve_report(result['html'], target_date, accept_fn)
 
 
 if __name__ == "__main__":
