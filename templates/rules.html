@@ -26,84 +26,9 @@
              id="rules-search" oninput="scheduleFilter()" autocomplete="off">
     </div>
 
-    <div id="groups-container">
-      {% for group in groups %}
-      <div class="domain-group"
-           id="group-{{ loop.index }}"
-           data-domain="{{ group.domain }}"
-           data-labels="{{ group.labels_in_group | join(',') }}">
-
-        <div class="domain-header">
-          <span class="domain-name">{{ group.domain }}</span>
-          <span class="domain-meta">
-            {% if group.senders|length %}{{ group.senders|length }} sender{{ 's' if group.senders|length != 1 }}{% endif %}
-            {% if group.domain_rules|length %}{% if group.senders|length %} · {% endif %}domain rule{% endif %}
-          </span>
-          {% if group.can_convert %}
-          <div class="convert-control">
-            {% if group.sender_label_pairs|length > 1 %}
-            <select class="convert-select" id="csel-{{ loop.index }}">
-              {% for short, full in group.sender_label_pairs %}
-              <option value="{{ full }}">{{ short }}</option>
-              {% endfor %}
-            </select>
-            {% endif %}
-            <button class="btn-convert"
-                    data-domain="{{ group.domain }}"
-                    {% if group.sender_label_pairs|length == 1 %}
-                    data-full-label="{{ group.sender_label_pairs[0][1] }}"
-                    data-label="{{ group.sender_label_pairs[0][0] }}"
-                    {% else %}
-                    data-select="csel-{{ loop.index }}"
-                    {% endif %}
-                    onclick="convertToDomain(this)">
-              ⇒ Domain rule
-            </button>
-          </div>
-          {% endif %}
-        </div>
-
-        {% for rule in group.domain_rules %}
-        <div class="rule-row domain-rule-row" data-label="{{ rule.label }}">
-          <span class="addr-cell domain-glob">*@{{ rule.domain }}</span>
-          <span class="label-chip">{{ rule.label }}</span>
-          <div class="rule-actions">
-            <button class="rule-btn rule-btn-delete"
-                    data-type="domain"
-                    data-domain="{{ rule.domain }}"
-                    data-full-label="{{ rule.full_label }}"
-                    onclick="deleteRule(this)"
-                    title="Delete rule">Delete</button>
-          </div>
-        </div>
-        {% endfor %}
-
-        {% for sender in group.senders %}
-        <div class="rule-row sender-row"
-             data-label="{{ sender.label }}"
-             data-address="{{ sender.address }}">
-          <span class="addr-cell">{{ sender.address }}</span>
-          <span class="label-chip">{{ sender.label }}</span>
-          <div class="rule-actions">
-            <button class="rule-btn rule-btn-edit"
-                    data-address="{{ sender.address }}"
-                    data-full-label="{{ sender.full_label }}"
-                    data-label="{{ sender.label }}"
-                    onclick="openEdit(this)"
-                    title="Edit label">Edit</button>
-            <button class="rule-btn rule-btn-delete"
-                    data-type="sender"
-                    data-address="{{ sender.address }}"
-                    data-full-label="{{ sender.full_label }}"
-                    onclick="deleteRule(this)"
-                    title="Delete rule">Delete</button>
-          </div>
-        </div>
-        {% endfor %}
-
-      </div>
-      {% endfor %}
-    </div>
+    <div id="groups-container"></div>
+    <div id="groups-sentinel"></div>
+    <div class="rules-load-status" id="rules-load-status"></div>
 
     <div class="rules-empty" id="rules-empty" style="display:none">No matches found.</div>
   </div>
@@ -144,64 +69,236 @@
 {% block scripts %}
 <script>
   const ALL_LABELS = {{ label_names | tojson }};
+  // Source of truth for rendering — mutated in place by delete/edit/convert,
+  // never re-fetched. The DOM is always a derived, windowed view of this.
+  const GROUPS = {{ groups | tojson }};
+  const BATCH_SIZE = 150;
+
   let activeLabel = '';
-  let editRow = null;
+  let currentQuery = '';
+  let currentVisible = [];   // groups (with filtered senders/domainRules) matching activeLabel/currentQuery
+  let renderedCount = 0;
+
   let editAddress = '';
   let editOldFullLabel = '';
   let selectedLabel = '';
 
-  // ── Pre-built index (avoids querySelectorAll inside the filter loop) ─────────
-  let _gi = [];  // group index
-
-  function _buildIndex() {
-    _gi = Array.from(document.querySelectorAll('.domain-group')).map(el => ({
-      el,
-      domain: (el.dataset.domain || '').toLowerCase(),
-      labels: el.dataset.labels ? el.dataset.labels.split(',') : [],
-      rows: Array.from(el.querySelectorAll('.rule-row')).map(r => ({
-        el: r,
-        label: r.dataset.label || '',
-        address: (r.dataset.address || '').toLowerCase(),
-      })),
-    }));
+  // ── Filtering (runs against GROUPS, not the DOM) ──────────────────────────────
+  function computeVisibleGroups() {
+    const q = currentQuery;
+    const out = [];
+    for (const group of GROUPS) {
+      const senders = group.senders.filter(s => {
+        const labelOk = !activeLabel || s.label === activeLabel;
+        const textOk = !q || s.address.toLowerCase().includes(q)
+          || group.domain.toLowerCase().includes(q) || s.label.toLowerCase().includes(q);
+        return labelOk && textOk;
+      });
+      const domainRules = group.domain_rules.filter(r => {
+        const labelOk = !activeLabel || r.label === activeLabel;
+        const textOk = !q || group.domain.toLowerCase().includes(q) || r.label.toLowerCase().includes(q);
+        return labelOk && textOk;
+      });
+      if (senders.length || domainRules.length) out.push({ group, senders, domainRules });
+    }
+    return out;
   }
 
-  // ── Facets ──────────────────────────────────────────────────────────────────
+  function applyFilter() {
+    currentVisible = computeVisibleGroups();
+    renderedCount = 0;
+    document.getElementById('groups-container').innerHTML = '';
+    renderBatch();
+  }
+
+  function refreshAfterMutation() {
+    currentVisible = computeVisibleGroups();
+    renderedCount = Math.min(renderedCount, currentVisible.length);
+    const container = document.getElementById('groups-container');
+    container.innerHTML = '';
+    for (let i = 0; i < renderedCount; i++) container.appendChild(renderGroupEl(currentVisible[i]));
+    document.getElementById('rules-empty').style.display = currentVisible.length ? 'none' : 'block';
+    updateLoadStatus();
+  }
+
+  function renderBatch() {
+    const container = document.getElementById('groups-container');
+    const start = renderedCount;
+    const end = Math.min(renderedCount + BATCH_SIZE, currentVisible.length);
+    for (let i = start; i < end; i++) container.appendChild(renderGroupEl(currentVisible[i]));
+    renderedCount = end;
+    document.getElementById('rules-empty').style.display = renderedCount === 0 ? 'block' : 'none';
+    updateLoadStatus();
+  }
+
+  function updateLoadStatus() {
+    const el = document.getElementById('rules-load-status');
+    el.textContent = renderedCount < currentVisible.length
+      ? `Showing ${renderedCount} of ${currentVisible.length} matching categories — scroll for more`
+      : '';
+  }
+
+  new IntersectionObserver(entries => {
+    if (entries[0].isIntersecting && renderedCount < currentVisible.length) renderBatch();
+  }, { rootMargin: '600px' }).observe(document.getElementById('groups-sentinel'));
+
+  // ── DOM rendering for one (filtered) group ────────────────────────────────────
+  function renderGroupEl(view) {
+    const { group, senders, domainRules } = view;
+    const el = document.createElement('div');
+    el.className = 'domain-group';
+
+    const header = document.createElement('div');
+    header.className = 'domain-header';
+
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'domain-name';
+    nameSpan.textContent = group.domain;
+    header.appendChild(nameSpan);
+
+    const metaSpan = document.createElement('span');
+    metaSpan.className = 'domain-meta';
+    let metaText = '';
+    if (group.senders.length) metaText += `${group.senders.length} sender${group.senders.length !== 1 ? 's' : ''}`;
+    if (group.domain_rules.length) metaText += (group.senders.length ? ' · ' : '') + 'domain rule';
+    metaSpan.textContent = metaText;
+    header.appendChild(metaSpan);
+
+    if (group.can_convert) {
+      const controlDiv = document.createElement('div');
+      controlDiv.className = 'convert-control';
+      let selectEl = null;
+      if (group.sender_label_pairs.length > 1) {
+        selectEl = document.createElement('select');
+        selectEl.className = 'convert-select';
+        group.sender_label_pairs.forEach(([short, full]) => {
+          const opt = document.createElement('option');
+          opt.value = full;
+          opt.textContent = short;
+          selectEl.appendChild(opt);
+        });
+        controlDiv.appendChild(selectEl);
+      }
+      const convertBtn = document.createElement('button');
+      convertBtn.className = 'btn-convert';
+      convertBtn.dataset.domain = group.domain;
+      convertBtn.textContent = '⇒ Domain rule';
+      if (selectEl) {
+        convertBtn._selectEl = selectEl;
+      } else {
+        convertBtn.dataset.fullLabel = group.sender_label_pairs[0][1];
+        convertBtn.dataset.label = group.sender_label_pairs[0][0];
+      }
+      convertBtn.addEventListener('click', () => convertToDomain(convertBtn));
+      controlDiv.appendChild(convertBtn);
+      header.appendChild(controlDiv);
+    }
+
+    el.appendChild(header);
+
+    domainRules.forEach(rule => {
+      const row = document.createElement('div');
+      row.className = 'rule-row domain-rule-row';
+      const addrCell = document.createElement('span');
+      addrCell.className = 'addr-cell domain-glob';
+      addrCell.textContent = `*@${rule.domain}`;
+      const chip = document.createElement('span');
+      chip.className = 'label-chip';
+      chip.textContent = rule.label;
+      const actions = document.createElement('div');
+      actions.className = 'rule-actions';
+      const delBtn = document.createElement('button');
+      delBtn.className = 'rule-btn rule-btn-delete';
+      delBtn.dataset.type = 'domain';
+      delBtn.dataset.domain = rule.domain;
+      delBtn.dataset.fullLabel = rule.full_label;
+      delBtn.title = 'Delete rule';
+      delBtn.textContent = 'Delete';
+      delBtn.addEventListener('click', () => deleteRule(delBtn));
+      actions.appendChild(delBtn);
+      row.append(addrCell, chip, actions);
+      el.appendChild(row);
+    });
+
+    senders.forEach(sender => {
+      const row = document.createElement('div');
+      row.className = 'rule-row sender-row';
+      const addrCell = document.createElement('span');
+      addrCell.className = 'addr-cell';
+      addrCell.textContent = sender.address;
+      const chip = document.createElement('span');
+      chip.className = 'label-chip';
+      chip.textContent = sender.label;
+      const actions = document.createElement('div');
+      actions.className = 'rule-actions';
+      const editBtn = document.createElement('button');
+      editBtn.className = 'rule-btn rule-btn-edit';
+      editBtn.dataset.address = sender.address;
+      editBtn.dataset.fullLabel = sender.full_label;
+      editBtn.dataset.label = sender.label;
+      editBtn.title = 'Edit label';
+      editBtn.textContent = 'Edit';
+      editBtn.addEventListener('click', () => openEdit(editBtn));
+      const delBtn = document.createElement('button');
+      delBtn.className = 'rule-btn rule-btn-delete';
+      delBtn.dataset.type = 'sender';
+      delBtn.dataset.address = sender.address;
+      delBtn.dataset.fullLabel = sender.full_label;
+      delBtn.title = 'Delete rule';
+      delBtn.textContent = 'Delete';
+      delBtn.addEventListener('click', () => deleteRule(delBtn));
+      actions.append(editBtn, delBtn);
+      row.append(addrCell, chip, actions);
+      el.appendChild(row);
+    });
+
+    return el;
+  }
+
+  // ── Facets / search ────────────────────────────────────────────────────────
   document.querySelectorAll('.facet-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       document.querySelectorAll('.facet-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       activeLabel = btn.dataset.label;
-      filterRules();
+      applyFilter();
     });
   });
 
   let _ft;
   function scheduleFilter() {
     clearTimeout(_ft);
-    _ft = setTimeout(filterRules, 200);
+    _ft = setTimeout(() => {
+      currentQuery = document.getElementById('rules-search').value.toLowerCase().trim();
+      applyFilter();
+    }, 200);
   }
 
-  function filterRules() {
-    const q = document.getElementById('rules-search').value.toLowerCase().trim();
-    let anyVisible = false;
+  // ── GROUPS mutation helpers ────────────────────────────────────────────────
+  function _domainOf(address) {
+    return address.includes('@') ? address.split('@').slice(-1)[0] : '__no_domain__';
+  }
 
-    for (const g of _gi) {
-      let rowsVisible = 0;
-      for (const row of g.rows) {
-        const labelOk = !activeLabel || row.label === activeLabel;
-        const textOk = !q || row.address.includes(q) || g.domain.includes(q) || row.label.includes(q);
-        const show = labelOk && textOk;
-        row.el.style.display = show ? '' : 'none';
-        if (show) rowsVisible++;
-      }
-      const groupLabelOk = !activeLabel || g.labels.includes(activeLabel);
-      const groupVisible = groupLabelOk && rowsVisible > 0;
-      g.el.style.display = groupVisible ? '' : 'none';
-      if (groupVisible) anyVisible = true;
+  function _findGroup(domain) {
+    return GROUPS.find(g => g.domain === domain);
+  }
+
+  function _recomputeGroupMeta(g) {
+    const pairs = new Map();
+    g.senders.forEach(s => pairs.set(s.full_label, [s.label, s.full_label]));
+    g.sender_label_pairs = [...pairs.values()].sort((a, b) => a[0].localeCompare(b[0]));
+    g.can_convert = g.senders.length > 0 && g.domain_rules.length === 0 && g.domain !== '__no_domain__';
+    const labelSet = new Set([...g.senders.map(s => s.label), ...g.domain_rules.map(r => r.label)]);
+    g.labels_in_group = [...labelSet].sort();
+  }
+
+  function _removeGroupIfEmpty(g) {
+    if (g.senders.length === 0 && g.domain_rules.length === 0) {
+      const idx = GROUPS.indexOf(g);
+      if (idx !== -1) GROUPS.splice(idx, 1);
+      return true;
     }
-
-    document.getElementById('rules-empty').style.display = anyVisible ? 'none' : 'block';
+    return false;
   }
 
   // ── Delete ──────────────────────────────────────────────────────────────────
@@ -226,10 +323,17 @@
       .then(r => r.json())
       .then(data => {
         if (data.ok) {
-          const row = btn.closest('.rule-row');
-          const group = btn.closest('.domain-group');
-          row.remove();
-          pruneGroup(group);
+          const domain = type === 'domain' ? btn.dataset.domain : _domainOf(btn.dataset.address);
+          const g = _findGroup(domain);
+          if (g) {
+            if (type === 'sender') {
+              g.senders = g.senders.filter(s => !(s.address === btn.dataset.address && s.full_label === fullLabel));
+            } else {
+              g.domain_rules = g.domain_rules.filter(r => !(r.domain === btn.dataset.domain && r.full_label === fullLabel));
+            }
+            if (!_removeGroupIfEmpty(g)) _recomputeGroupMeta(g);
+          }
+          refreshAfterMutation();
           showToast('Rule deleted', 'success');
         } else {
           showToast('Error: ' + (data.error || 'Unknown'), 'error');
@@ -240,7 +344,6 @@
 
   // ── Edit modal ──────────────────────────────────────────────────────────────
   function openEdit(btn) {
-    editRow = btn.closest('.rule-row');
     editAddress = btn.dataset.address;
     editOldFullLabel = btn.dataset.fullLabel;
     selectedLabel = btn.dataset.label;
@@ -258,7 +361,6 @@
 
   function closeModal() {
     document.getElementById('edit-modal').style.display = 'none';
-    editRow = null;
   }
 
   function pickLabel(btn) {
@@ -298,21 +400,17 @@
       .then(r => r.json())
       .then(data => {
         if (data.ok) {
-          // Update chip and data attrs in-place
-          const chip = editRow.querySelector('.label-chip');
-          chip.textContent = finalLabel.replace('MailMatrixCategories/', '');
-          editRow.dataset.label = finalLabel.replace('MailMatrixCategories/', '');
-          // Update edit btn's data attrs so a second edit works
-          const editBtn = editRow.querySelector('.rule-btn-edit');
-          if (editBtn) {
-            editBtn.dataset.label = chip.textContent;
-            editBtn.dataset.fullLabel = finalLabel.startsWith('MailMatrixCategories/')
-              ? finalLabel : `MailMatrixCategories/${finalLabel}`;
+          const g = _findGroup(_domainOf(editAddress));
+          if (g) {
+            const s = g.senders.find(s => s.address === editAddress && s.full_label === editOldFullLabel);
+            if (s) {
+              s.label = finalLabel.replace('MailMatrixCategories/', '');
+              s.full_label = finalLabel.startsWith('MailMatrixCategories/')
+                ? finalLabel : `MailMatrixCategories/${finalLabel}`;
+            }
+            _recomputeGroupMeta(g);
           }
-          // Refresh group labels and index
-          updateGroupLabels(editRow.closest('.domain-group'));
-          _buildIndex();
-          filterRules();
+          refreshAfterMutation();
           const moved = data.moved || 0;
           showToast(`Saved. ${moved} message${moved !== 1 ? 's' : ''} moved.`, 'success');
           closeModal();
@@ -328,73 +426,45 @@
   function convertToDomain(btn) {
     const domain = btn.dataset.domain;
 
-    // Resolve label: pre-filled on single-label domains, or read from sibling select
+    // Resolve label: pre-filled on single-label domains, or read from the sibling select
     let fullLabel = btn.dataset.fullLabel;
     let shortLabel = btn.dataset.label;
-    if (btn.dataset.select) {
-      const sel = document.getElementById(btn.dataset.select);
-      fullLabel = sel.value;
-      shortLabel = sel.options[sel.selectedIndex].text;
+    if (btn._selectEl) {
+      fullLabel = btn._selectEl.value;
+      shortLabel = btn._selectEl.options[btn._selectEl.selectedIndex].text;
     }
 
     if (!confirm(`Create a domain rule for *@${domain} → ${shortLabel}?\n\nThis will replace individual sender rules for this domain that belong to ${shortLabel}.`)) return;
 
+    // Other labels still holding individual sender rules for this domain would
+    // now overlap with the new domain rule (mail filed to both) — offer to clean them up.
+    const g = _findGroup(domain);
+    const otherLabels = g ? [...new Set(g.senders.filter(s => s.label !== shortLabel).map(s => s.label))] : [];
+    const purgeOther = otherLabels.length > 0 && confirm(
+      `${otherLabels.length} other rule${otherLabels.length !== 1 ? 's' : ''} for *@${domain} still exist under: ${otherLabels.join(', ')}.\n\n` +
+      `These will now overlap with the new domain rule, and matching mail could be filed to both. Delete them too, so *@${domain} only goes to ${shortLabel}?`
+    );
+
     fetch('/api/rules/convert-domain', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
-      body: JSON.stringify({ domain, full_label: fullLabel }),
+      body: JSON.stringify({ domain, full_label: fullLabel, purge_other_labels: purgeOther }),
     })
       .then(r => r.json())
       .then(data => {
         if (data.ok) {
-          const group = btn.closest('.domain-group');
-
-          // Remove sender rows that belonged to this label (others remain)
-          group.querySelectorAll('.sender-row').forEach(r => {
-            if (r.dataset.label === shortLabel) r.remove();
-          });
-
-          // Remove the entire convert-control (select + button)
-          btn.closest('.convert-control')?.remove();
-
-          // Update meta text
-          const meta = group.querySelector('.domain-meta');
-          if (meta) {
-            const remaining = group.querySelectorAll('.sender-row').length;
-            meta.textContent = remaining ? `${remaining} sender${remaining !== 1 ? 's' : ''} · domain rule` : 'domain rule';
+          if (g) {
+            g.senders = purgeOther ? [] : g.senders.filter(s => s.label !== shortLabel);
+            g.domain_rules.push({ domain, label: shortLabel, full_label: fullLabel });
+            _recomputeGroupMeta(g);
           }
-
-          // Insert domain rule row after the header
-          // M4: build DOM imperatively to avoid XSS via stored label/domain values
-          const header = group.querySelector('.domain-header');
-          const newRow = document.createElement('div');
-          newRow.className = 'rule-row domain-rule-row';
-          newRow.dataset.label = shortLabel;
-          const globSpan = document.createElement('span');
-          globSpan.className = 'addr-cell domain-glob';
-          globSpan.textContent = '*@' + domain;
-          const chipSpan = document.createElement('span');
-          chipSpan.className = 'label-chip';
-          chipSpan.textContent = shortLabel;
-          const actions = document.createElement('div');
-          actions.className = 'rule-actions';
-          const delBtn = document.createElement('button');
-          delBtn.className = 'rule-btn rule-btn-delete';
-          delBtn.dataset.type = 'domain';
-          delBtn.dataset.domain = domain;
-          delBtn.dataset.fullLabel = fullLabel;
-          delBtn.title = 'Delete rule';
-          delBtn.textContent = 'Delete';
-          delBtn.addEventListener('click', () => deleteRule(delBtn));
-          actions.appendChild(delBtn);
-          newRow.appendChild(globSpan);
-          newRow.appendChild(chipSpan);
-          newRow.appendChild(actions);
-          header.after(newRow);
-
-          updateGroupLabels(group);
-          _buildIndex();
-          showToast(`Domain rule *@${domain} → ${shortLabel} created`, 'success');
+          refreshAfterMutation();
+          showToast(
+            purgeOther
+              ? `Domain rule *@${domain} → ${shortLabel} created; other rules for this domain removed`
+              : `Domain rule *@${domain} → ${shortLabel} created`,
+            'success'
+          );
         } else {
           showToast('Error: ' + (data.error || 'Unknown'), 'error');
         }
@@ -402,30 +472,9 @@
       .catch(() => showToast('Request failed', 'error'));
   }
 
-  // ── Utilities ───────────────────────────────────────────────────────────────
-  function pruneGroup(group) {
-    const remaining = group.querySelectorAll('.rule-row');
-    if (remaining.length === 0) {
-      group.remove();
-    } else {
-      updateGroupLabels(group);
-    }
-    _buildIndex();
-  }
-
-  function updateGroupLabels(group) {
-    if (!group) return;
-    const labels = new Set();
-    group.querySelectorAll('.rule-row').forEach(r => {
-      if (r.dataset.label) labels.add(r.dataset.label);
-    });
-    group.dataset.labels = [...labels].join(',');
-  }
-
   // Close modal on Escape
   document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
 
-  // Build index on page load
-  _buildIndex();
+  applyFilter();
 </script>
 {% endblock %}

@@ -8,8 +8,16 @@
 </div>
 
 <div id="inbox-loading" class="card inbox-loading-card">
-  <div class="inbox-spinner"></div>
-  <div class="inbox-loading-text">Analyzing your inbox — this takes about 30 seconds</div>
+  <div class="inbox-loading-text" id="inbox-progress-text">Starting…</div>
+  <div class="progress-bar-track">
+    <div class="progress-bar-fill" id="inbox-progress-fill" style="width:0%"></div>
+  </div>
+  <button class="btn btn-secondary btn-sm" id="inbox-cancel-btn" onclick="cancelAnalysis()">Cancel</button>
+</div>
+
+<div id="inbox-cancelled" class="card" style="display:none">
+  <div class="inbox-loading-text">Analysis cancelled.</div>
+  <button class="btn btn-secondary btn-sm" onclick="startAnalysis()">Restart</button>
 </div>
 
 <div id="inbox-error" class="card" style="display:none">
@@ -22,21 +30,90 @@
 {% block scripts %}
 <script>
   let _analysisData = null;
+  let _jobId = null;
+  let _pollTimer = null;
 
-  (async () => {
+  startAnalysis();
+
+  async function startAnalysis() {
+    document.getElementById('inbox-cancelled').style.display = 'none';
+    document.getElementById('inbox-error').style.display = 'none';
+    document.getElementById('inbox-results').style.display = 'none';
+    document.getElementById('inbox-loading').style.display = '';
+    document.getElementById('inbox-cancel-btn').disabled = false;
+    setProgress('fetching', 0, 0);
+
     try {
-      const resp = await fetch('/api/inbox-analyze', { headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+      const resp = await fetch('/api/inbox-analyze/start', {
+        method: 'POST',
+        headers: { 'X-Requested-With': 'XMLHttpRequest' },
+      });
       const data = await resp.json();
-      if (!resp.ok || !data.ok) {
-        showError(data.error || 'Analysis failed');
+      if (!resp.ok || !data.job_id) {
+        showError(data.error || 'Could not start analysis');
         return;
       }
-      _analysisData = data;
-      renderResults(data);
+      _jobId = data.job_id;
+      _pollTimer = setInterval(pollStatus, 700);
     } catch (err) {
       showError(err.message);
     }
-  })();
+  }
+
+  async function pollStatus() {
+    try {
+      const resp = await fetch(`/api/inbox-analyze/status/${_jobId}`);
+      const data = await resp.json();
+      if (!resp.ok) {
+        clearInterval(_pollTimer);
+        showError(data.error || 'Analysis failed');
+        return;
+      }
+
+      if (data.status === 'running') {
+        const p = data.progress || {};
+        setProgress(p.phase, p.current || 0, p.total || 0);
+        return;
+      }
+
+      clearInterval(_pollTimer);
+      if (data.status === 'done') {
+        _analysisData = data.result;
+        renderResults(data.result);
+      } else if (data.status === 'cancelled') {
+        document.getElementById('inbox-loading').style.display = 'none';
+        document.getElementById('inbox-cancelled').style.display = '';
+        document.getElementById('inbox-subtitle').textContent = 'Analysis cancelled';
+      } else {
+        showError((data.result && data.result.error) || 'Analysis failed');
+      }
+    } catch (err) {
+      clearInterval(_pollTimer);
+      showError(err.message);
+    }
+  }
+
+  function setProgress(phase, current, total) {
+    const pct = total > 0 ? Math.round((current / total) * 100) : 0;
+    document.getElementById('inbox-progress-fill').style.width = pct + '%';
+    const text = phase === 'analyzing'
+      ? `Analyzing ${current} / ${total} senders with Claude…`
+      : `Fetching ${current} / ${total} messages…`;
+    document.getElementById('inbox-progress-text').textContent = text;
+  }
+
+  async function cancelAnalysis() {
+    if (!_jobId) return;
+    document.getElementById('inbox-cancel-btn').disabled = true;
+    try {
+      await fetch(`/api/inbox-analyze/cancel/${_jobId}`, {
+        method: 'POST',
+        headers: { 'X-Requested-With': 'XMLHttpRequest' },
+      });
+    } catch (err) {
+      // next poll will surface any real failure
+    }
+  }
 
   function showError(msg) {
     document.getElementById('inbox-loading').style.display = 'none';

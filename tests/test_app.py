@@ -69,6 +69,14 @@ def test_dashboard_returns_200(client):
     assert b"Dashboard" in resp.data
 
 
+def test_dashboard_custom_date_defaults_to_day_before_oldest_recent_day(client):
+    from datetime import date, timedelta
+    expected = (date.today() - timedelta(days=7)).isoformat()
+    resp = client.get("/")
+    assert f'id="custom-date"' in resp.data.decode()
+    assert f'value="{expected}"' in resp.data.decode()
+
+
 def test_summaries_page_returns_200(client):
     resp = client.get("/summaries")
     assert resp.status_code == 200
@@ -345,6 +353,47 @@ def test_api_rules_convert_domain_removes_subsumed_senders(client):
         assert not addr.endswith("@work.com")
 
 
+def test_api_rules_convert_domain_leaves_other_labels_by_default(client):
+    data = flask_app_module._load_rules()
+    shopping = next(e for e in data["labels"] if e["labelName"] == "MailMatrixCategories/Shopping")
+    shopping["emailAddresses"].append("other@work.com")
+    flask_app_module._save_rules(data)
+
+    resp = client.post(
+        "/api/rules/convert-domain",
+        data=json.dumps({"domain": "work.com", "full_label": "MailMatrixCategories/Work"}),
+        content_type="application/json",
+    )
+    assert resp.get_json()["ok"] is True
+
+    data = flask_app_module._load_rules()
+    shopping = next(e for e in data["labels"] if e["labelName"] == "MailMatrixCategories/Shopping")
+    assert "other@work.com" in shopping["emailAddresses"]
+
+
+def test_api_rules_convert_domain_purges_other_labels_when_requested(client):
+    data = flask_app_module._load_rules()
+    shopping = next(e for e in data["labels"] if e["labelName"] == "MailMatrixCategories/Shopping")
+    shopping["emailAddresses"].append("other@work.com")
+    flask_app_module._save_rules(data)
+
+    resp = client.post(
+        "/api/rules/convert-domain",
+        data=json.dumps({
+            "domain": "work.com",
+            "full_label": "MailMatrixCategories/Work",
+            "purge_other_labels": True,
+        }),
+        content_type="application/json",
+    )
+    assert resp.get_json()["ok"] is True
+
+    data = flask_app_module._load_rules()
+    shopping = next(e for e in data["labels"] if e["labelName"] == "MailMatrixCategories/Shopping")
+    assert "other@work.com" not in shopping["emailAddresses"]
+    assert "orders@amazon.com" in shopping["emailAddresses"]  # unrelated address untouched
+
+
 def test_api_rules_convert_domain_missing_params(client):
     resp = client.post(
         "/api/rules/convert-domain",
@@ -556,7 +605,7 @@ def test_inbox_page_returns_200(client):
     assert b"Inbox" in resp.data
 
 
-# ── /api/inbox-analyze ────────────────────────────────────────────────────────
+# ── /api/inbox-analyze/* (job-based) ───────────────────────────────────────────
 
 _RAW_HEADERS = b"From: Alice Work <alice@work.com>\r\nSubject: Q2 Report\r\nDate: Fri, 27 Jun 2026\r\n"
 _RAW_BODY = b"Please review the attached."
@@ -584,25 +633,43 @@ def _imap_env(monkeypatch):
     monkeypatch.setenv("IMAP_PASSWORD", "pw")
 
 
-def test_api_inbox_analyze_missing_credentials_returns_500(client, monkeypatch):
+def _run_inbox_job_sync(monkeypatch):
+    """Make /start run the job synchronously in the request thread instead of
+    spawning a real background thread, so status is immediately final."""
+    monkeypatch.setattr(flask_app_module, "_start_job_thread", flask_app_module._run_inbox_job)
+
+
+def _start_and_get_status(client):
+    resp = client.post("/api/inbox-analyze/start", headers={"X-Requested-With": "XMLHttpRequest"})
+    job_id = resp.get_json()["job_id"]
+    return client.get(f"/api/inbox-analyze/status/{job_id}").get_json()
+
+
+def test_api_inbox_analyze_missing_credentials_returns_error_status(client, monkeypatch):
     monkeypatch.delenv("IMAP_SERVER", raising=False)
     monkeypatch.delenv("IMAP_USERNAME", raising=False)
     monkeypatch.delenv("IMAP_PASSWORD", raising=False)
-    resp = client.get("/api/inbox-analyze")
-    assert resp.status_code == 500
-    assert resp.get_json()["ok"] is False
+    _run_inbox_job_sync(monkeypatch)
+
+    data = _start_and_get_status(client)
+    assert data["status"] == "error"
+    assert data["result"]["ok"] is False
 
 
-def test_api_inbox_analyze_connection_failure_returns_500(client, monkeypatch):
+def test_api_inbox_analyze_connection_failure_returns_error_status(client, monkeypatch):
     _imap_env(monkeypatch)
+    _run_inbox_job_sync(monkeypatch)
+
     with patch("app.connect_to_imap", side_effect=OSError("Connection refused")):
-        resp = client.get("/api/inbox-analyze")
-    assert resp.status_code == 500
-    assert "Connection refused" in resp.get_json()["error"]
+        data = _start_and_get_status(client)
+
+    assert data["status"] == "error"
+    assert "Connection refused" in data["result"]["error"]
 
 
 def test_api_inbox_analyze_empty_inbox(client, monkeypatch):
     _imap_env(monkeypatch)
+    _run_inbox_job_sync(monkeypatch)
     imap = _inbox_imap(msg_ids=b"")
     imap.search.return_value = ("OK", [b""])
 
@@ -611,17 +678,16 @@ def test_api_inbox_analyze_empty_inbox(client, monkeypatch):
         patch("app.get_all_labels", return_value=["MailMatrixCategories/Work"]),
         patch("app.analyze_with_claude", return_value={"action_required": [], "filing_suggestions": []}),
     ):
-        resp = client.get("/api/inbox-analyze")
+        data = _start_and_get_status(client)
 
-    data = resp.get_json()
-    assert resp.status_code == 200
-    assert data["ok"] is True
-    assert data["emails"] == []
-    assert data["labels"] == ["MailMatrixCategories/Work"]
+    assert data["status"] == "done"
+    assert data["result"]["emails"] == []
+    assert data["result"]["labels"] == ["MailMatrixCategories/Work"]
 
 
 def test_api_inbox_analyze_returns_emails_and_suggestions(client, monkeypatch):
     _imap_env(monkeypatch)
+    _run_inbox_job_sync(monkeypatch)
     imap = _inbox_imap(msg_ids=b"1")
     analysis = {
         "action_required": [{"index": 1, "from": "alice@work.com", "subject": "Q2 Report", "reason": "Reply needed"}],
@@ -633,22 +699,22 @@ def test_api_inbox_analyze_returns_emails_and_suggestions(client, monkeypatch):
         patch("app.get_all_labels", return_value=["MailMatrixCategories/Work"]),
         patch("app.analyze_with_claude", return_value=analysis),
     ):
-        resp = client.get("/api/inbox-analyze")
+        data = _start_and_get_status(client)
 
-    data = resp.get_json()
-    assert resp.status_code == 200
-    assert data["ok"] is True
-    assert len(data["emails"]) == 1
-    assert data["emails"][0]["from_addr"] == "alice@work.com"
-    assert data["emails"][0]["subject"] == "Q2 Report"
-    assert data["action_required"] == analysis["action_required"]
-    assert data["filing_suggestions"] == analysis["filing_suggestions"]
-    assert data["labels"] == ["MailMatrixCategories/Work"]
-    assert data["error"] is None
+    result = data["result"]
+    assert data["status"] == "done"
+    assert len(result["emails"]) == 1
+    assert result["emails"][0]["from_addr"] == "alice@work.com"
+    assert result["emails"][0]["subject"] == "Q2 Report"
+    assert result["action_required"] == analysis["action_required"]
+    assert result["filing_suggestions"] == analysis["filing_suggestions"]
+    assert result["labels"] == ["MailMatrixCategories/Work"]
+    assert result["error"] is None
 
 
 def test_api_inbox_analyze_deduplicates_same_sender(client, monkeypatch):
     _imap_env(monkeypatch)
+    _run_inbox_job_sync(monkeypatch)
     # Two message IDs, both from the same sender
     imap = _inbox_imap(msg_ids=b"1 2")
 
@@ -657,35 +723,32 @@ def test_api_inbox_analyze_deduplicates_same_sender(client, monkeypatch):
         patch("app.get_all_labels", return_value=[]),
         patch("app.analyze_with_claude", return_value={"action_required": [], "filing_suggestions": []}),
     ):
-        resp = client.get("/api/inbox-analyze")
+        data = _start_and_get_status(client)
 
-    data = resp.get_json()
-    assert resp.status_code == 200
-    assert len(data["emails"]) == 1
-    assert data["emails"][0]["count"] == 2
+    assert len(data["result"]["emails"]) == 1
+    assert data["result"]["emails"][0]["count"] == 2
 
 
 def test_api_inbox_analyze_claude_error_surfaces_in_response(client, monkeypatch):
     _imap_env(monkeypatch)
-    imap = _inbox_imap(msg_ids=b"")
-    imap.search.return_value = ("OK", [b""])
+    _run_inbox_job_sync(monkeypatch)
+    imap = _inbox_imap(msg_ids=b"1")
 
     with (
         patch("app.connect_to_imap", return_value=imap),
         patch("app.get_all_labels", return_value=[]),
         patch("app.analyze_with_claude", return_value={"action_required": [], "filing_suggestions": [], "_error": "API key invalid"}),
     ):
-        resp = client.get("/api/inbox-analyze")
+        data = _start_and_get_status(client)
 
-    data = resp.get_json()
-    assert resp.status_code == 200
-    assert data["ok"] is True
-    assert data["error"] == "API key invalid"
+    assert data["status"] == "done"
+    assert data["result"]["error"] == "API key invalid"
 
 
 def test_api_inbox_analyze_msg_id_not_in_response(client, monkeypatch):
     """IMAP msg_id (bytes) must be stripped — it can't serialize to JSON."""
     _imap_env(monkeypatch)
+    _run_inbox_job_sync(monkeypatch)
     imap = _inbox_imap(msg_ids=b"1")
 
     with (
@@ -693,8 +756,146 @@ def test_api_inbox_analyze_msg_id_not_in_response(client, monkeypatch):
         patch("app.get_all_labels", return_value=[]),
         patch("app.analyze_with_claude", return_value={"action_required": [], "filing_suggestions": []}),
     ):
-        resp = client.get("/api/inbox-analyze")
+        data = _start_and_get_status(client)
 
-    assert resp.status_code == 200
-    for em in resp.get_json()["emails"]:
+    for em in data["result"]["emails"]:
         assert "msg_id" not in em
+
+
+def test_api_inbox_analyze_no_retrieval_cap(client, monkeypatch):
+    """All INBOX messages are fetched — there is no hard cap on raw retrieval."""
+    _imap_env(monkeypatch)
+    _run_inbox_job_sync(monkeypatch)
+    msg_id_list = " ".join(str(i) for i in range(1, 151)).encode()
+    imap = _inbox_imap(msg_ids=msg_id_list)
+
+    with (
+        patch("app.connect_to_imap", return_value=imap),
+        patch("app.get_all_labels", return_value=[]),
+        patch("app.analyze_with_claude", return_value={"action_required": [], "filing_suggestions": []}),
+    ):
+        data = _start_and_get_status(client)
+
+    assert data["status"] == "done"
+    # 150 raw messages, all from the same sender in _RAW_HEADERS -> 1 unique sender
+    assert data["result"]["emails"][0]["count"] == 150
+
+
+def test_api_inbox_analyze_batches_claude_calls_and_remaps_indices(client, monkeypatch):
+    """More than CLAUDE_BATCH_SIZE unique senders must be split into multiple
+    Claude calls, with each batch's local index offset back to the sender's
+    global position in the deduped list."""
+    _imap_env(monkeypatch)
+    _run_inbox_job_sync(monkeypatch)
+
+    n_senders = 120
+    msg_id_list = " ".join(str(i) for i in range(1, n_senders + 1)).encode()
+    imap = _inbox_imap(msg_ids=msg_id_list)
+
+    def _fetch(msg_id, what):
+        n = int(msg_id)
+        headers = f"From: Sender {n} <sender{n}@work.com>\r\nSubject: Msg {n}\r\nDate: Fri, 27 Jun 2026\r\n".encode()
+        if "HEADER" in what:
+            return ("OK", [(b"1 (BODY[HEADER.FIELDS (FROM SUBJECT DATE)] {80})", headers), b")"])
+        return ("OK", [(b"1 (BODY[TEXT]<0> {26})", _RAW_BODY), b")"])
+
+    imap.fetch.side_effect = _fetch
+
+    def _fake_analyze(batch, labels):
+        return {
+            "action_required": [],
+            "filing_suggestions": [
+                {"index": i + 1, "from": em["from_addr"], "suggested_label": "MailMatrixCategories/Work",
+                 "is_new_label": False, "reason": "x"}
+                for i, em in enumerate(batch)
+            ],
+        }
+
+    with (
+        patch("app.connect_to_imap", return_value=imap),
+        patch("app.get_all_labels", return_value=[]),
+        patch("app.analyze_with_claude", side_effect=_fake_analyze) as mock_analyze,
+    ):
+        data = _start_and_get_status(client)
+
+    assert data["status"] == "done"
+    assert mock_analyze.call_count == 3  # 50 + 50 + 20
+    suggestions = data["result"]["filing_suggestions"]
+    global_indices = sorted(s["index"] for s in suggestions)
+    assert global_indices == list(range(1, n_senders + 1))
+
+
+def _fixed_job_id(monkeypatch, job_id="fixed-test-job-id"):
+    """The job runs synchronously inside POST /start (via _run_inbox_job_sync),
+    so a test-side callback that wants to flip cancel_event mid-run needs the
+    job_id before the response comes back. Pin uuid4 so it's known upfront."""
+    monkeypatch.setattr(flask_app_module.uuid, "uuid4", lambda: type("_U", (), {"hex": job_id})())
+    return job_id
+
+
+def test_api_inbox_analyze_cancel_during_fetch(client, monkeypatch):
+    _imap_env(monkeypatch)
+    _run_inbox_job_sync(monkeypatch)
+    job_id = _fixed_job_id(monkeypatch)
+    msg_id_list = " ".join(str(i) for i in range(1, 11)).encode()
+    imap = _inbox_imap(msg_ids=msg_id_list)
+
+    fetch_count = {"n": 0}
+    real_fetch = imap.fetch.side_effect
+
+    def _counting_fetch(msg_id, what):
+        fetch_count["n"] += 1
+        if fetch_count["n"] == 3:
+            flask_app_module._inbox_jobs[job_id]["cancel_event"].set()
+        return real_fetch(msg_id, what)
+
+    imap.fetch.side_effect = _counting_fetch
+
+    with (
+        patch("app.connect_to_imap", return_value=imap),
+        patch("app.get_all_labels", return_value=[]),
+        patch("app.analyze_with_claude") as mock_analyze,
+    ):
+        client.post("/api/inbox-analyze/start", headers={"X-Requested-With": "XMLHttpRequest"})
+
+    data = client.get(f"/api/inbox-analyze/status/{job_id}").get_json()
+    assert data["status"] == "cancelled"
+    mock_analyze.assert_not_called()
+
+
+def test_api_inbox_analyze_cancel_between_batches(client, monkeypatch):
+    _imap_env(monkeypatch)
+    _run_inbox_job_sync(monkeypatch)
+    job_id = _fixed_job_id(monkeypatch)
+    n_senders = 120
+    msg_id_list = " ".join(str(i) for i in range(1, n_senders + 1)).encode()
+    imap = _inbox_imap(msg_ids=msg_id_list)
+
+    def _fetch(msg_id, what):
+        n = int(msg_id)
+        headers = f"From: Sender {n} <sender{n}@work.com>\r\nSubject: Msg {n}\r\nDate: Fri, 27 Jun 2026\r\n".encode()
+        if "HEADER" in what:
+            return ("OK", [(b"1 (BODY[HEADER.FIELDS (FROM SUBJECT DATE)] {80})", headers), b")"])
+        return ("OK", [(b"1 (BODY[TEXT]<0> {26})", _RAW_BODY), b")"])
+
+    imap.fetch.side_effect = _fetch
+
+    def _cancel_after_first_batch(batch, labels):
+        flask_app_module._inbox_jobs[job_id]["cancel_event"].set()
+        return {"action_required": [], "filing_suggestions": []}
+
+    with (
+        patch("app.connect_to_imap", return_value=imap),
+        patch("app.get_all_labels", return_value=[]),
+        patch("app.analyze_with_claude", side_effect=_cancel_after_first_batch) as mock_analyze,
+    ):
+        client.post("/api/inbox-analyze/start", headers={"X-Requested-With": "XMLHttpRequest"})
+
+    data = client.get(f"/api/inbox-analyze/status/{job_id}").get_json()
+    assert data["status"] == "cancelled"
+    mock_analyze.assert_called_once()  # second batch never ran
+
+
+def test_api_inbox_analyze_unknown_job_returns_404(client):
+    resp = client.get("/api/inbox-analyze/status/does-not-exist")
+    assert resp.status_code == 404

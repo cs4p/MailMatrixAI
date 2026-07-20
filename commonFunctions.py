@@ -374,11 +374,14 @@ def dashboard_stats(rules_data: dict, summary_dir: Union[str, Path], today: date
             "filename": f"email_summary_{date_str}.html" if has_summary else None,
         })
 
+    custom_default = (today - timedelta(days=7)).isoformat()
+
     return {
         "label_count": label_count,
         "rules_count": rules_count,
         "summary_count": summary_count,
         "recent_days": recent_days,
+        "custom_default": custom_default,
     }
 
 
@@ -520,8 +523,13 @@ def update_sender_rule(data: dict, address: str, old_full_label: str, new_full_l
     })
 
 
-def convert_domain_rule(data: dict, domain: str, full_label: str) -> None:
-    """Add a domain-glob rule to full_label and drop individual senders it now subsumes."""
+def convert_domain_rule(data: dict, domain: str, full_label: str, purge_other_labels: bool = False) -> None:
+    """Add a domain-glob rule to full_label and drop individual senders it now subsumes.
+
+    If purge_other_labels, also remove individual sender rules for this domain from
+    every other label — otherwise those senders would keep matching their old label
+    AND the new domain rule, filing mail to both.
+    """
     for entry in data.get("labels", []):
         if entry["labelName"] == full_label:
             domains = entry.setdefault("emailDomains", [])
@@ -532,13 +540,22 @@ def convert_domain_rule(data: dict, domain: str, full_label: str) -> None:
                 a for a in entry.get("emailAddresses", [])
                 if not a.lower().endswith(f"@{domain}")
             ]
-            return
+            break
+    else:
+        data.setdefault("labels", []).append({
+            "labelName": full_label,
+            "emailAddresses": [],
+            "emailDomains": [domain],
+        })
 
-    data.setdefault("labels", []).append({
-        "labelName": full_label,
-        "emailAddresses": [],
-        "emailDomains": [domain],
-    })
+    if purge_other_labels:
+        for entry in data.get("labels", []):
+            if entry["labelName"] == full_label:
+                continue
+            entry["emailAddresses"] = [
+                a for a in entry.get("emailAddresses", [])
+                if not a.lower().endswith(f"@{domain}")
+            ]
 
 
 def move_imap_messages(address: str, from_full_label: str, to_full_label: str,

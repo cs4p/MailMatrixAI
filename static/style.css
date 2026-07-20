@@ -561,6 +561,13 @@ a:hover { text-decoration: underline; }
   font-size: .9375rem;
 }
 
+.rules-load-status {
+  padding: .75rem;
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: .8125rem;
+}
+
 /* ── Edit modal ───────────────────────────────────────────────────────────── */
 .modal-overlay {
   display: none;
@@ -934,20 +941,23 @@ a:hover { text-decoration: underline; }
   padding: 3rem;
   gap: 1rem;
 }
-@keyframes inbox-spin {
-  to { transform: rotate(360deg); }
-}
-.inbox-spinner {
-  width: 36px;
-  height: 36px;
-  border: 3px solid var(--border);
-  border-top-color: var(--blue);
-  border-radius: 50%;
-  animation: inbox-spin .8s linear infinite;
-}
 .inbox-loading-text {
   font-size: .875rem;
   color: var(--text-secondary);
+}
+.progress-bar-track {
+  width: 100%;
+  max-width: 360px;
+  height: 8px;
+  background: var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.progress-bar-fill {
+  height: 100%;
+  background: var(--blue);
+  border-radius: 4px;
+  transition: width .3s ease;
 }
 .inbox-section {
   margin-bottom: 1.25rem;

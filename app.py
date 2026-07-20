@@ -3,6 +3,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from datetime import date
 from pathlib import Path
 
@@ -80,6 +81,11 @@ ENV_PATH = BASE_DIR / ".env"
 _sort_lock = threading.Lock()
 _CREDENTIAL_KEYS = {"IMAP_SERVER", "IMAP_PORT", "IMAP_USERNAME", "IMAP_PASSWORD", "ANTHROPIC_API_KEY"}
 
+CLAUDE_BATCH_SIZE = 50
+_INBOX_JOB_MAX_AGE = 600  # seconds a finished job's state is kept around for polling
+_inbox_jobs: dict = {}
+_inbox_jobs_lock = threading.Lock()
+
 
 def _migrate_env_to_keychain() -> None:
     """One-time migration: copy .env credentials to macOS Keychain on first run."""
@@ -152,6 +158,7 @@ def dashboard():
         summary_count=stats["summary_count"],
         recent_days=stats["recent_days"],
         today=today.isoformat(),
+        custom_default=stats["custom_default"],
     )
 
 
@@ -355,14 +362,16 @@ def api_rules_convert_domain():
     body = request.get_json(force=True)
     domain = body.get("domain", "").strip()
     full_label = body.get("full_label", "").strip()
+    purge_other_labels = bool(body.get("purge_other_labels"))
 
     if not domain or not full_label:
         return jsonify({"ok": False, "error": "Missing domain or label"}), 400
 
     data = _load_rules()
-    convert_domain_rule(data, domain, full_label)
+    convert_domain_rule(data, domain, full_label, purge_other_labels=purge_other_labels)
     _save_rules(data)
-    log.info("Domain rule created: *@%s → %s", domain, full_label)
+    log.info("Domain rule created: *@%s → %s%s", domain, full_label,
+              " (purged other-label rules for this domain)" if purge_other_labels else "")
     return jsonify({"ok": True})
 
 
@@ -371,8 +380,16 @@ def inbox():
     return render_template("inbox.html")
 
 
-def _analyze_inbox() -> dict:
-    """Fetch all current INBOX messages, call Claude, return analysis JSON."""
+def _analyze_inbox(progress_cb=None, cancel_event=None) -> dict:
+    """Fetch all current INBOX messages, then call Claude in batches of
+    CLAUDE_BATCH_SIZE unique senders at a time. progress_cb(phase, current, total)
+    is invoked during both the IMAP fetch phase and the Claude analysis phase;
+    cancel_event is checked between messages and between batches so a caller
+    running this in a background thread can stop it early.
+    """
+    progress_cb = progress_cb or (lambda phase, current, total: None)
+    cancel_event = cancel_event or threading.Event()
+
     server = get_credential("IMAP_SERVER")
     user = get_credential("IMAP_USERNAME")
     pw = get_credential("IMAP_PASSWORD")
@@ -387,6 +404,7 @@ def _analyze_inbox() -> dict:
 
     raw_emails = []
     labels = []
+    cancelled = False
     try:
         labels = get_all_labels(imap, "MailMatrixCategories")
         _imap_call(lambda: imap.select("INBOX", readonly=True))
@@ -394,7 +412,11 @@ def _analyze_inbox() -> dict:
         msg_ids = data[0].split() if status == "OK" and data[0] else []
         log.info("INBOX fetch: %d messages", len(msg_ids))
 
-        for msg_id in msg_ids:
+        for i, msg_id in enumerate(msg_ids, 1):
+            if cancel_event.is_set():
+                cancelled = True
+                break
+            progress_cb("fetching", i, len(msg_ids))
             try:
                 st, raw_data = _imap_call(
                     lambda mid=msg_id: imap.fetch(mid, "(BODY[HEADER.FIELDS (FROM SUBJECT DATE CONTENT-TYPE)])")
@@ -429,9 +451,36 @@ def _analyze_inbox() -> dict:
     finally:
         imap.logout()
 
+    if cancelled:
+        return {"cancelled": True}
+
     emails = deduplicate_inbox_emails(raw_emails)
-    log.info("Deduplicated to %d unique senders; calling Claude", len(emails))
-    analysis = analyze_with_claude(emails, labels)
+    total_senders = len(emails)
+    log.info("Deduplicated to %d unique senders; calling Claude in batches of %d",
+              total_senders, CLAUDE_BATCH_SIZE)
+
+    action_required = []
+    filing_suggestions = []
+    error = None
+    for batch_start in range(0, total_senders, CLAUDE_BATCH_SIZE):
+        if cancel_event.is_set():
+            cancelled = True
+            break
+        batch = emails[batch_start:batch_start + CLAUDE_BATCH_SIZE]
+        progress_cb("analyzing", batch_start, total_senders)
+        analysis = analyze_with_claude(batch, labels)
+        if analysis.get("_error") and not error:
+            error = analysis["_error"]
+        # analyze_with_claude numbers emails 1..len(batch) local to this call;
+        # offset back to the sender's position in the full deduped list.
+        for item in analysis.get("action_required", []):
+            action_required.append({**item, "index": item["index"] + batch_start})
+        for item in analysis.get("filing_suggestions", []):
+            filing_suggestions.append({**item, "index": item["index"] + batch_start})
+        progress_cb("analyzing", batch_start + len(batch), total_senders)
+
+    if cancelled:
+        return {"cancelled": True}
 
     return {
         "ok": True,
@@ -440,18 +489,81 @@ def _analyze_inbox() -> dict:
             for em in emails
         ],
         "labels": labels,
-        "action_required": analysis.get("action_required", []),
-        "filing_suggestions": analysis.get("filing_suggestions", []),
-        "error": analysis.get("_error"),
+        "action_required": action_required,
+        "filing_suggestions": filing_suggestions,
+        "error": error,
     }
 
 
-@app.route("/api/inbox-analyze")
-def api_inbox_analyze():
-    result = _analyze_inbox()
-    if not result.get("ok"):
-        return jsonify(result), 500
-    return jsonify(result)
+def _prune_inbox_jobs() -> None:
+    cutoff = time.time() - _INBOX_JOB_MAX_AGE
+    for jid in [j for j, job in _inbox_jobs.items() if job["created_at"] < cutoff]:
+        del _inbox_jobs[jid]
+
+
+def _run_inbox_job(job_id: str) -> None:
+    job = _inbox_jobs[job_id]
+
+    def progress_cb(phase, current, total):
+        job["progress"] = {"phase": phase, "current": current, "total": total}
+
+    try:
+        result = _analyze_inbox(progress_cb=progress_cb, cancel_event=job["cancel_event"])
+    except Exception as exc:
+        log.exception("Inbox analysis job %s failed", job_id)
+        job["status"] = "error"
+        job["result"] = {"ok": False, "error": str(exc)}
+        return
+
+    if result.get("cancelled"):
+        job["status"] = "cancelled"
+    elif not result.get("ok"):
+        job["status"] = "error"
+        job["result"] = result
+    else:
+        job["status"] = "done"
+        job["result"] = result
+
+
+def _start_job_thread(job_id: str) -> None:
+    threading.Thread(target=_run_inbox_job, args=(job_id,), daemon=True).start()
+
+
+@app.route("/api/inbox-analyze/start", methods=["POST"])
+def api_inbox_analyze_start():
+    with _inbox_jobs_lock:
+        _prune_inbox_jobs()
+        job_id = uuid.uuid4().hex
+        _inbox_jobs[job_id] = {
+            "status": "running",
+            "progress": {"phase": "fetching", "current": 0, "total": 0},
+            "result": None,
+            "cancel_event": threading.Event(),
+            "created_at": time.time(),
+        }
+    _start_job_thread(job_id)
+    return jsonify({"job_id": job_id})
+
+
+@app.route("/api/inbox-analyze/status/<job_id>")
+def api_inbox_analyze_status(job_id):
+    job = _inbox_jobs.get(job_id)
+    if not job:
+        return jsonify({"error": "Unknown job"}), 404
+    return jsonify({
+        "status": job["status"],
+        "progress": job["progress"],
+        "result": job["result"],
+    })
+
+
+@app.route("/api/inbox-analyze/cancel/<job_id>", methods=["POST"])
+def api_inbox_analyze_cancel(job_id):
+    job = _inbox_jobs.get(job_id)
+    if not job:
+        return jsonify({"error": "Unknown job"}), 404
+    job["cancel_event"].set()
+    return jsonify({"ok": True})
 
 
 @app.route("/cleanup")

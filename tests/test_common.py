@@ -402,6 +402,34 @@ def test_convert_domain_rule_no_duplicate_domain(rules_data):
     assert rules_data["labels"][1]["emailDomains"].count("shop.example.com") == 1
 
 
+def test_convert_domain_rule_leaves_other_labels_by_default():
+    data = {
+        "labels": [
+            {"labelName": "MailMatrixCategories/Work", "emailAddresses": ["a@work.com"], "emailDomains": []},
+            {"labelName": "MailMatrixCategories/Personal", "emailAddresses": ["b@work.com"], "emailDomains": []},
+        ]
+    }
+    convert_domain_rule(data, "work.com", "MailMatrixCategories/Work")
+    personal = next(e for e in data["labels"] if e["labelName"] == "MailMatrixCategories/Personal")
+    assert personal["emailAddresses"] == ["b@work.com"]
+
+
+def test_convert_domain_rule_purges_other_labels_when_requested():
+    data = {
+        "labels": [
+            {"labelName": "MailMatrixCategories/Work", "emailAddresses": ["a@work.com"], "emailDomains": []},
+            {"labelName": "MailMatrixCategories/Personal", "emailAddresses": ["b@work.com", "c@elsewhere.com"], "emailDomains": []},
+        ]
+    }
+    convert_domain_rule(data, "work.com", "MailMatrixCategories/Work", purge_other_labels=True)
+    work = next(e for e in data["labels"] if e["labelName"] == "MailMatrixCategories/Work")
+    personal = next(e for e in data["labels"] if e["labelName"] == "MailMatrixCategories/Personal")
+    assert work["emailDomains"] == ["work.com"]
+    assert work["emailAddresses"] == []
+    # b@work.com purged (matches the new domain rule); c@elsewhere.com is unrelated and stays
+    assert personal["emailAddresses"] == ["c@elsewhere.com"]
+
+
 # ── move_imap_messages ─────────────────────────────────────────────────────────
 
 def test_move_imap_messages_moves_matching_messages(mock_imap):
@@ -495,6 +523,13 @@ def test_dashboard_stats_marks_has_summary_and_filename(tmp_path):
     assert stats["summary_count"] == 1
     assert stats["recent_days"][0]["has_summary"] is True
     assert stats["recent_days"][0]["filename"] == "email_summary_2026-07-16.html"
+
+
+def test_dashboard_stats_custom_default_is_one_day_before_oldest_recent_day(tmp_path):
+    stats = dashboard_stats({"labels": []}, tmp_path, date(2026, 7, 16))
+    oldest = stats["recent_days"][-1]["date"]
+    assert oldest == "2026-07-10"
+    assert stats["custom_default"] == "2026-07-09"
 
 
 # ── collapse_domain_rule ───────────────────────────────────────────────────────
