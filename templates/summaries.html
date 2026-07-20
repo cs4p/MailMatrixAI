@@ -13,6 +13,16 @@
   <a class="summary-card" href="/summaries/{{ f.filename }}" target="_blank">
     <div class="summary-icon">✦</div>
     <div class="summary-label">{{ f.label }}</div>
+    {% if f.generated_at %}
+    <div class="summary-generated-at">Run {{ f.generated_at }}</div>
+    {% endif %}
+    {% if 'processed' in f %}
+    <div class="summary-stats">
+      <span class="summary-stat"><strong>{{ f.processed }}</strong> processed</span>
+      <span class="summary-stat"><strong>{{ f.need_attention }}</strong> need attention</span>
+      <span class="summary-stat"><strong>{{ f.unfiled }}</strong> unfiled</span>
+    </div>
+    {% endif %}
     <div class="summary-filename">{{ f.filename }}</div>
     <div class="summary-arrow">→</div>
   </a>

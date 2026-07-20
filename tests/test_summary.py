@@ -140,6 +140,20 @@ def test_build_html_report_empty_action_items_shows_placeholder():
     assert "No emails require immediate action" in html
 
 
+def test_build_html_report_stat_bar_shows_processed_need_attention_unfiled():
+    email = _make_email("alice@nowhere.com")
+    analysis = {
+        "action_required": [{"index": 1, "from": "alice@nowhere.com", "subject": "x", "reason": "y"}],
+        "filing_suggestions": [],
+    }
+    filed = {"MailMatrixCategories/Work": [_make_email("boss@work.com")]}
+    html = build_html_report(date(2026, 6, 28), [email], filed, analysis)
+    assert '<div class="stat-num blue">2</div><div class="stat-label">Processed</div>' in html
+    assert '<div class="stat-num red">1</div><div class="stat-label">Need Attention</div>' in html
+    assert '<div class="stat-num orange">1</div><div class="stat-label">Unfiled</div>' in html
+    assert '<div class="stat-num green">1</div><div class="stat-label">Filed</div>' in html
+
+
 def test_build_html_report_shows_generated_at_timestamp():
     html = build_html_report(
         date(2026, 6, 28), [], {}, {"action_required": [], "filing_suggestions": []},
@@ -520,9 +534,20 @@ def test_generate_report_returns_expected_shape(mock_imap, tmp_path, monkeypatch
     assert result["unmatched"] == 0
     assert result["action_required"] == 1
     assert result["filed"] == 0
+    assert result["processed"] == 0
     assert result["output_file"] == str(tmp_path / "emailSummary" / "email_summary_2026-06-28.html")
     assert os.path.exists(result["output_file"])
     assert "Generated" in result["html"]
+
+    # Sidecar JSON stats for the Summaries list page
+    meta_file = tmp_path / "emailSummary" / "email_summary_2026-06-28.json"
+    assert meta_file.exists()
+    meta = json.loads(meta_file.read_text())
+    assert meta["processed"] == 0
+    assert meta["need_attention"] == 1
+    assert meta["unfiled"] == 0
+    assert meta["filed"] == 0
+    assert "generated_at" in meta
 
 
 def test_generate_report_skips_sort_when_run_sort_false(mock_imap, tmp_path, monkeypatch):

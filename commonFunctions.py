@@ -8,7 +8,7 @@ import re
 import threading
 import time
 from collections import defaultdict
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from email.header import decode_header as _decode_header
 from email.message import Message
 from pathlib import Path
@@ -251,6 +251,21 @@ def parse_headers(raw: str) -> dict:
     return result
 
 
+# Matches a <style>/<script> block through to its closing tag, or (since
+# BODY[TEXT] fetches here are byte-range-truncated) through to the end of the
+# string if the closing tag was never reached — otherwise a big inline <style>
+# block in a truncated marketing-template email leaves its raw CSS behind as
+# if it were message text, since stripping bare "<tag>" markup only removes
+# the tags themselves, not the (non-tag) text content between them.
+_STYLE_SCRIPT_RE = re.compile(r"<(style|script)\b[^>]*>.*?(</\1\s*>|\Z)", re.I | re.S)
+
+
+def _strip_html_noise(html: str) -> str:
+    """Strip <style>/<script> blocks (including unclosed/truncated ones), then tags."""
+    html = _STYLE_SCRIPT_RE.sub(" ", html)
+    return re.sub(r"<[^>]+>", " ", html)
+
+
 def _decode_mime_part(part: Message) -> str:
     """Decode a MIME part's payload (quoted-printable/base64-aware) to text."""
     try:
@@ -286,21 +301,21 @@ def extract_body_snippet(header_bytes: bytes, body_bytes: bytes, max_len: int = 
                 if part.get_content_type() in ("text/plain", "text/html"):
                     candidate = _decode_mime_part(part)
                     if part.get_content_type() == "text/html":
-                        candidate = re.sub(r"<[^>]+>", " ", candidate)
+                        candidate = _strip_html_noise(candidate)
                     if candidate.strip():
                         text = candidate
                         break
         else:
             text = _decode_mime_part(msg)
             if msg.get_content_type() == "text/html":
-                text = re.sub(r"<[^>]+>", " ", text)
+                text = _strip_html_noise(text)
     except Exception:
         text = ""
 
     if not text.strip():
         # Fall back to a raw decode if MIME parsing didn't yield anything usable
         text = body_bytes.decode(errors="replace")
-        text = re.sub(r"<[^>]+>", " ", text)
+        text = _strip_html_noise(text)
 
     text = re.sub(r"\s+", " ", text).strip()
     return text[:max_len]
@@ -329,7 +344,13 @@ def save_rules_file(path: Union[str, Path], data: dict) -> None:
 
 
 def summary_files(summary_dir: Union[str, Path]) -> List[dict]:
-    """List saved email_summary_*.html reports, newest first."""
+    """List saved email_summary_*.html reports, newest first.
+
+    Each entry also carries processed/need_attention/unfiled/filed counts and a
+    human-readable generated_at label when a matching .json sidecar (written by
+    emailSummary.py's generate_report()) exists — older reports predating that
+    sidecar just won't have these keys.
+    """
     summary_dir = Path(summary_dir)
     files = []
     if summary_dir.exists():
@@ -340,7 +361,29 @@ def summary_files(summary_dir: Union[str, Path]) -> List[dict]:
                 label = d.strftime("%B %d, %Y")
             except ValueError:
                 label = date_part
-            files.append({"filename": p.name, "label": label, "date": date_part})
+            entry = {"filename": p.name, "label": label, "date": date_part}
+
+            meta_path = p.with_suffix(".json")
+            meta = None
+            if meta_path.exists():
+                try:
+                    with open(meta_path, encoding="utf-8") as f:
+                        meta = json.load(f)
+                except (json.JSONDecodeError, OSError):
+                    meta = None
+            if meta is not None:
+                entry["processed"] = meta.get("processed")
+                entry["need_attention"] = meta.get("need_attention")
+                entry["unfiled"] = meta.get("unfiled")
+                entry["filed"] = meta.get("filed")
+                generated_at = meta.get("generated_at")
+                if generated_at:
+                    try:
+                        entry["generated_at"] = datetime.fromisoformat(generated_at).strftime("%b %d, %Y at %I:%M %p")
+                    except ValueError:
+                        entry["generated_at"] = generated_at
+
+            files.append(entry)
     return files
 
 
@@ -354,7 +397,7 @@ def dashboard_stats(rules_data: dict, summary_dir: Union[str, Path], today: date
     )
     all_summaries = summary_files(summary_dir)
     summary_count = len(all_summaries)
-    existing_dates = {f["date"] for f in all_summaries}
+    by_date = {f["date"]: f for f in all_summaries}
 
     recent_days = []
     for i in range(7):
@@ -366,12 +409,16 @@ def dashboard_stats(rules_data: dict, summary_dir: Union[str, Path], today: date
             label = "Yesterday"
         else:
             label = f"{d.strftime('%a, %b')} {d.day}"
-        has_summary = date_str in existing_dates
+        summary = by_date.get(date_str)
         recent_days.append({
             "date": date_str,
             "label": label,
-            "has_summary": has_summary,
-            "filename": f"email_summary_{date_str}.html" if has_summary else None,
+            "has_summary": summary is not None,
+            "filename": summary["filename"] if summary else None,
+            "processed": summary.get("processed") if summary else None,
+            "need_attention": summary.get("need_attention") if summary else None,
+            "unfiled": summary.get("unfiled") if summary else None,
+            "generated_at": summary.get("generated_at") if summary else None,
         })
 
     custom_default = (today - timedelta(days=7)).isoformat()
@@ -437,6 +484,9 @@ def build_rule_groups(data: dict) -> dict:
             "sender_label_pairs": sender_label_pairs,
             "labels_in_group": all_group_labels,
         })
+
+    # Most senders first; alphabetical by domain as a stable tiebreaker.
+    groups.sort(key=lambda g: (-len(g["senders"]), g["domain"]))
 
     all_label_names = sorted({
         entry["labelName"].replace("MailMatrixCategories/", "")

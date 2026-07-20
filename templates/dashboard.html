@@ -36,28 +36,50 @@
   </button>
 </div>
 
+{% if optimization_count %}
+<div class="card cleanup-widget">
+  <div class="cleanup-widget-text">
+    <span class="cleanup-widget-count">{{ optimization_count }}</span>
+    optimization{{ '' if optimization_count == 1 else 's' }} found
+  </div>
+  <a class="btn btn-sm btn-secondary" href="/cleanup">Review →</a>
+</div>
+{% endif %}
+
 <div class="dash-columns">
   <!-- Summaries card -->
   <div class="card summary-gen-card">
     <div class="card-header">Email Summaries</div>
 
-    {% for day in recent_days %}
-    <div class="summary-gen-row" id="summary-row-{{ day.date }}">
-      <div class="summary-gen-day">
-        <span class="summary-gen-label">{{ day.label }}</span>
-        <span class="summary-gen-date">{{ day.date }}</span>
+    <div class="summary-gen-grid">
+      {% for day in recent_days %}
+      <div class="summary-gen-cell" id="summary-row-{{ day.date }}">
+        <div class="summary-gen-day">
+          <span class="summary-gen-label">{{ day.label }}</span>
+          <span class="summary-gen-date">{{ day.date }}</span>
+          {% if day.generated_at %}
+          <span class="summary-generated-at">Run {{ day.generated_at }}</span>
+          {% endif %}
+          {% if day.processed is not none %}
+          <div class="summary-stats">
+            <span class="summary-stat"><strong>{{ day.processed }}</strong> processed</span>
+            <span class="summary-stat"><strong>{{ day.need_attention }}</strong> need attention</span>
+            <span class="summary-stat"><strong>{{ day.unfiled }}</strong> unfiled</span>
+          </div>
+          {% endif %}
+        </div>
+        {% if day.has_summary %}
+        <a class="btn btn-sm btn-view" href="/summaries/{{ day.filename }}" target="_blank">View →</a>
+        {% else %}
+        <button class="btn btn-sm btn-generate"
+                data-date="{{ day.date }}"
+                onclick="generateFor('{{ day.date }}', this)">Generate</button>
+        {% endif %}
       </div>
-      {% if day.has_summary %}
-      <a class="btn btn-sm btn-view" href="/summaries/{{ day.filename }}" target="_blank">View →</a>
-      {% else %}
-      <button class="btn btn-sm btn-generate"
-              data-date="{{ day.date }}"
-              onclick="generateFor('{{ day.date }}', this)">Generate</button>
-      {% endif %}
+      {% endfor %}
     </div>
-    {% endfor %}
 
-    <div class="summary-gen-row summary-gen-custom">
+    <div class="summary-gen-custom">
       <div class="summary-gen-day">
         <span class="summary-gen-label">Other date</span>
       </div>

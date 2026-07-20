@@ -147,6 +147,26 @@ a:hover { text-decoration: underline; }
 
 .stat-note { font-size: .8rem; color: var(--text-secondary); margin-top: .2rem; }
 
+/* ── Cleanup widget (Dashboard) ───────────────────────────────────────────── */
+.cleanup-widget {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem 1.5rem;
+  margin-bottom: 2rem;
+}
+
+.cleanup-widget-text {
+  font-size: .9375rem;
+  color: var(--text);
+}
+
+.cleanup-widget-count {
+  font-weight: 700;
+  color: var(--orange);
+}
+
 /* ── Action buttons ───────────────────────────────────────────────────────── */
 .action-row {
   display: flex;
@@ -182,31 +202,31 @@ a:hover { text-decoration: underline; }
 
 /* ── Dashboard two-column layout ──────────────────────────────────────────── */
 .dash-columns {
-  display: grid;
-  grid-template-columns: 340px 1fr;
+  display: flex;
+  flex-direction: column;
   gap: 1rem;
-  align-items: start;
-}
-
-@media (max-width: 760px) {
-  .dash-columns { grid-template-columns: 1fr; }
 }
 
 /* ── Summary generation card ──────────────────────────────────────────────── */
-.summary-gen-card { padding: 0; overflow: hidden; }
-.summary-gen-card .card-header { padding: .75rem 1.1rem; border-bottom: 1px solid var(--border); }
+.summary-gen-card { padding: 1.25rem 1.5rem; }
 
-.summary-gen-row {
-  display: flex;
-  align-items: center;
+.summary-gen-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
   gap: .75rem;
-  padding: .55rem 1.1rem;
-  border-bottom: 1px solid var(--border);
 }
-.summary-gen-row:last-child { border-bottom: none; }
+
+.summary-gen-cell {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: .6rem;
+  padding: .75rem .85rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
 
 .summary-gen-day {
-  flex: 1;
   display: flex;
   flex-direction: column;
   gap: .1rem;
@@ -225,9 +245,15 @@ a:hover { text-decoration: underline; }
   font-family: 'SF Mono', 'Fira Code', monospace;
 }
 
+.summary-gen-cell .btn-sm { align-self: flex-start; }
+
 .summary-gen-custom {
-  background: rgba(0,0,0,.015);
+  display: flex;
+  align-items: center;
   gap: .5rem;
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
 }
 
 .date-input {
@@ -321,6 +347,15 @@ a:hover { text-decoration: underline; }
 
 .summary-icon { font-size: 1.5rem; color: var(--blue); }
 .summary-label { font-weight: 700; font-size: 1.05rem; }
+.summary-generated-at { font-size: .75rem; color: var(--text-secondary); }
+.summary-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .1rem .6rem;
+  font-size: .78rem;
+  color: var(--text-secondary);
+}
+.summary-stat strong { color: var(--text); }
 .summary-filename { font-size: .75rem; color: var(--text-secondary); }
 .summary-arrow { position: absolute; top: 1.5rem; right: 1.5rem; color: var(--text-secondary); font-size: 1.1rem; }
 
@@ -436,6 +471,18 @@ a:hover { text-decoration: underline; }
   border-bottom: 1px solid var(--border);
   flex-wrap: wrap;
 }
+
+.domain-toggle {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  width: 1rem;
+  font-size: .7rem;
+  color: var(--text-secondary);
+  line-height: 1;
+}
+.domain-toggle:hover { color: var(--text); }
 
 .domain-name {
   font-size: .82rem;

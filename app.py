@@ -150,6 +150,8 @@ def dashboard():
     rules = _load_rules()
     today = date.today()
     stats = dashboard_stats(rules, SUMMARY_DIR, today)
+    # Same "optimizations" count the /cleanup page uses to decide empty-vs-not.
+    optimization_count = len(find_domain_collapsible(rules)) + len(find_duplicate_addresses(rules))
 
     return render_template(
         "dashboard.html",
@@ -159,6 +161,7 @@ def dashboard():
         recent_days=stats["recent_days"],
         today=today.isoformat(),
         custom_default=stats["custom_default"],
+        optimization_count=optimization_count,
     )
 
 

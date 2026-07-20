@@ -65,6 +65,7 @@ h1 { font-size: 1.75rem; font-weight: 700; margin: 0 0 .5rem; }
 .red { color: #ff3b30; }
 .orange { color: #ff9500; }
 .green { color: #34c759; }
+.blue { color: #0066cc; }
 section {
   background: white; border-radius: 16px; padding: 1.5rem;
   margin: 1.25rem 0; box-shadow: 0 1px 4px rgba(0,0,0,.08);
@@ -397,6 +398,7 @@ def build_html_report(
 ) -> str:
     generated_at = generated_at or datetime.now()
     total_filed = sum(len(v) for v in filed_emails.values())
+    total_processed = len(inbox_emails) + total_filed
     action_items = analysis.get('action_required', [])
     filing_suggestions = {
         s['index']: s
@@ -516,10 +518,12 @@ def build_html_report(
         f' onclick="refreshReport(this)">↻ Refresh</button>\n'
         f'  </div>\n'
         f'  <div class="stat-bar">\n'
-        f'    <div class="stat"><div class="stat-num orange">{len(inbox_emails)}</div>'
-        f'<div class="stat-label">Unmatched</div></div>\n'
+        f'    <div class="stat"><div class="stat-num blue">{total_processed}</div>'
+        f'<div class="stat-label">Processed</div></div>\n'
         f'    <div class="stat"><div class="stat-num red">{len(action_items)}</div>'
-        f'<div class="stat-label">Action Required</div></div>\n'
+        f'<div class="stat-label">Need Attention</div></div>\n'
+        f'    <div class="stat"><div class="stat-num orange">{len(inbox_emails)}</div>'
+        f'<div class="stat-label">Unfiled</div></div>\n'
         f'    <div class="stat"><div class="stat-num green">{total_filed}</div>'
         f'<div class="stat-label">Filed</div></div>\n'
         f'  </div>\n'
@@ -673,11 +677,17 @@ def generate_report(target_date: date, run_sort: bool = True) -> dict:
     log.info("INBOX: %d messages, %d unique senders", len(raw_inbox), len(inbox_emails))
 
     analysis = analyze_with_claude(inbox_emails, labels)
+    generated_at = datetime.now()
 
     report = build_html_report(
         target_date, inbox_emails, filed_emails, analysis, labels,
-        generated_at=datetime.now(),
+        generated_at=generated_at,
     )
+
+    total_filed = sum(len(v) for v in filed_emails.values())
+    unfiled = len(inbox_emails)
+    need_attention = len(analysis.get('action_required', []))
+    processed = unfiled + total_filed
 
     # L5: anchor output to the script's directory, not CWD
     output_dir = os.path.join(_SCRIPT_DIR, "emailSummary")
@@ -687,12 +697,25 @@ def generate_report(target_date: date, run_sort: bool = True) -> dict:
         f.write(report)
     log.info("Report written to %s", output_file)
 
+    # Sidecar JSON so the Summaries list page can show these stats without
+    # having to scrape/parse the saved HTML report.
+    meta_file = os.path.join(output_dir, f"email_summary_{target_date.strftime('%Y-%m-%d')}.json")
+    with open(meta_file, 'w', encoding='utf-8') as f:
+        json.dump({
+            'processed': processed,
+            'need_attention': need_attention,
+            'unfiled': unfiled,
+            'filed': total_filed,
+            'generated_at': generated_at.isoformat(),
+        }, f)
+
     return {
         'html': report,
         'output_file': output_file,
-        'unmatched': len(inbox_emails),
-        'action_required': len(analysis.get('action_required', [])),
-        'filed': sum(len(v) for v in filed_emails.values()),
+        'unmatched': unfiled,
+        'action_required': need_attention,
+        'filed': total_filed,
+        'processed': processed,
     }
 
 

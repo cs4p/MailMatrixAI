@@ -1,4 +1,5 @@
 import imaplib
+import json
 from datetime import date
 from unittest.mock import MagicMock, patch
 
@@ -334,6 +335,13 @@ def test_build_rule_groups_empty_labels():
     assert result == {"groups": [], "label_names": [], "total_senders": 0, "total_domain_rules": 0}
 
 
+def test_build_rule_groups_sorted_by_sender_count_descending(rules_data):
+    result = build_rule_groups(rules_data)
+    domains_in_order = [g["domain"] for g in result["groups"]]
+    # work.com: 2 senders, amazon.com: 1 sender, shop.example.com: 0 senders (domain rule only)
+    assert domains_in_order == ["work.com", "amazon.com", "shop.example.com"]
+
+
 # ── delete_rule ────────────────────────────────────────────────────────────────
 
 def test_delete_rule_removes_sender(rules_data):
@@ -499,6 +507,37 @@ def test_summary_files_falls_back_to_raw_date_part_on_parse_failure(tmp_path):
     assert files[0]["label"] == "not-a-date"
 
 
+def test_summary_files_reads_stats_from_json_sidecar(tmp_path):
+    (tmp_path / "email_summary_2026-07-16.html").write_text("<html></html>")
+    (tmp_path / "email_summary_2026-07-16.json").write_text(json.dumps({
+        "processed": 42, "need_attention": 3, "unfiled": 5, "filed": 37,
+        "generated_at": "2026-07-16T09:05:00",
+    }))
+    files = summary_files(tmp_path)
+    f = files[0]
+    assert f["processed"] == 42
+    assert f["need_attention"] == 3
+    assert f["unfiled"] == 5
+    assert f["filed"] == 37
+    assert f["generated_at"] == "Jul 16, 2026 at 09:05 AM"
+
+
+def test_summary_files_no_stats_without_sidecar(tmp_path):
+    (tmp_path / "email_summary_2026-07-16.html").write_text("<html></html>")
+    files = summary_files(tmp_path)
+    assert "processed" not in files[0]
+    assert "generated_at" not in files[0]
+
+
+def test_summary_files_tolerates_malformed_sidecar(tmp_path):
+    (tmp_path / "email_summary_2026-07-16.html").write_text("<html></html>")
+    (tmp_path / "email_summary_2026-07-16.json").write_text("{not valid json")
+    files = summary_files(tmp_path)
+    # Doesn't blow up; just no stats surfaced for this entry
+    assert files[0]["filename"] == "email_summary_2026-07-16.html"
+    assert "processed" not in files[0]
+
+
 # ── dashboard_stats ────────────────────────────────────────────────────────────
 
 def test_dashboard_stats_counts_labels_and_rules(rules_data, tmp_path):
@@ -512,7 +551,10 @@ def test_dashboard_stats_recent_days_labels_today_and_yesterday(tmp_path):
     stats = dashboard_stats({"labels": []}, tmp_path, date(2026, 7, 16))
     days = stats["recent_days"]
     assert len(days) == 7
-    assert days[0] == {"date": "2026-07-16", "label": "Today", "has_summary": False, "filename": None}
+    assert days[0] == {
+        "date": "2026-07-16", "label": "Today", "has_summary": False, "filename": None,
+        "processed": None, "need_attention": None, "unfiled": None, "generated_at": None,
+    }
     assert days[1]["label"] == "Yesterday"
     assert days[1]["date"] == "2026-07-15"
 
@@ -523,6 +565,29 @@ def test_dashboard_stats_marks_has_summary_and_filename(tmp_path):
     assert stats["summary_count"] == 1
     assert stats["recent_days"][0]["has_summary"] is True
     assert stats["recent_days"][0]["filename"] == "email_summary_2026-07-16.html"
+
+
+def test_dashboard_stats_recent_days_carries_stats_from_sidecar(tmp_path):
+    (tmp_path / "email_summary_2026-07-16.html").write_text("<html></html>")
+    (tmp_path / "email_summary_2026-07-16.json").write_text(json.dumps({
+        "processed": 42, "need_attention": 3, "unfiled": 5, "filed": 37,
+        "generated_at": "2026-07-16T09:05:00",
+    }))
+    stats = dashboard_stats({"labels": []}, tmp_path, date(2026, 7, 16))
+    today = stats["recent_days"][0]
+    assert today["processed"] == 42
+    assert today["need_attention"] == 3
+    assert today["unfiled"] == 5
+    assert today["generated_at"] == "Jul 16, 2026 at 09:05 AM"
+
+
+def test_dashboard_stats_recent_days_without_summary_have_none_stats(tmp_path):
+    stats = dashboard_stats({"labels": []}, tmp_path, date(2026, 7, 16))
+    today = stats["recent_days"][0]
+    assert today["processed"] is None
+    assert today["need_attention"] is None
+    assert today["unfiled"] is None
+    assert today["generated_at"] is None
 
 
 def test_dashboard_stats_custom_default_is_one_day_before_oldest_recent_day(tmp_path):
@@ -643,3 +708,36 @@ def test_extract_body_snippet_truncates_to_max_len():
     body_bytes = b"x" * 1000
     snippet = extract_body_snippet(header_bytes, body_bytes, max_len=50)
     assert snippet == "x" * 50
+
+
+def test_extract_body_snippet_strips_complete_style_block():
+    header_bytes = b'Content-Type: text/html; charset="utf-8"\r\n\r\n'
+    body_bytes = b"<html><head><style>body { color: red; }</style></head><body><p>Hello</p></body></html>"
+    assert extract_body_snippet(header_bytes, body_bytes) == "Hello"
+
+
+def test_extract_body_snippet_drops_unclosed_style_block_from_byte_range_truncation():
+    # BODY[TEXT]<0.2000> fetches are byte-range-truncated -- a marketing-template
+    # email's inline <style> block can be cut off before its closing tag ever
+    # appears, which previously leaked raw CSS into the preview.
+    header_bytes = (
+        b'Content-Type: text/html; charset="utf-8"\r\n'
+        b'Content-Transfer-Encoding: quoted-printable\r\n\r\n'
+    )
+    body_bytes = (
+        b'<html><head><style type=3D"text/css">\r\n'
+        b'body { margin: 0; padding: 0; min-width: 100%; b=\r\n'
+        b'ackground: #fff; width: 100% !important; font-family: Arial, Helvetica, san=\r\n'
+        b's-serif; }\r\n'
+        b'tbody { display:table !important; width:100% !important;} .but'
+    )
+    assert extract_body_snippet(header_bytes, body_bytes) == ""
+
+
+def test_extract_body_snippet_keeps_text_between_style_blocks():
+    header_bytes = b'Content-Type: text/html; charset="utf-8"\r\n\r\n'
+    body_bytes = (
+        b"<style>.a{color:red}</style>Real content here"
+        b"<script>unclosed script tail that never closes"
+    )
+    assert extract_body_snippet(header_bytes, body_bytes) == "Real content here"

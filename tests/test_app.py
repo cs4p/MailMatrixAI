@@ -77,9 +77,79 @@ def test_dashboard_custom_date_defaults_to_day_before_oldest_recent_day(client):
     assert f'value="{expected}"' in resp.data.decode()
 
 
+def test_dashboard_hides_cleanup_widget_when_no_optimizations(client):
+    resp = client.get("/")
+    assert b"cleanup-widget" not in resp.data
+
+
+def test_dashboard_summary_row_shows_stats_from_sidecar(client):
+    from datetime import date as _date
+    today_str = _date.today().isoformat()
+    summary_dir = flask_app_module.SUMMARY_DIR
+    (summary_dir / f"email_summary_{today_str}.html").write_text("<html></html>")
+    (summary_dir / f"email_summary_{today_str}.json").write_text(json.dumps({
+        "processed": 42, "need_attention": 3, "unfiled": 5, "filed": 37,
+        "generated_at": f"{today_str}T09:05:00",
+    }))
+
+    resp = client.get("/")
+    html = resp.data.decode()
+    assert "42" in html and "processed" in html
+    assert "3" in html and "need attention" in html
+    assert "5" in html and "unfiled" in html
+    assert "Run" in html and "09:05 AM" in html
+
+
+def test_dashboard_summary_row_no_stats_without_sidecar(client):
+    resp = client.get("/")
+    html = resp.data.decode()
+    assert "summary-stats" not in html
+    assert "summary-generated-at" not in html
+
+
+def test_dashboard_shows_cleanup_widget_when_duplicate_address_exists(client):
+    data = flask_app_module._load_rules()
+    # File the same address under two labels -> a duplicate-address optimization
+    data["labels"][1]["emailAddresses"].append("boss@work.com")
+    flask_app_module._save_rules(data)
+
+    resp = client.get("/")
+    html = resp.data.decode()
+    assert "cleanup-widget" in html
+    assert ">1</span>" in html
+    assert "optimization found" in html
+    assert 'href="/cleanup"' in html
+
+
 def test_summaries_page_returns_200(client):
     resp = client.get("/summaries")
     assert resp.status_code == 200
+
+
+def test_summaries_page_shows_stats_from_sidecar(client):
+    summary_dir = flask_app_module.SUMMARY_DIR
+    (summary_dir / "email_summary_2026-07-16.html").write_text("<html></html>")
+    (summary_dir / "email_summary_2026-07-16.json").write_text(json.dumps({
+        "processed": 42, "need_attention": 3, "unfiled": 5, "filed": 37,
+        "generated_at": "2026-07-16T09:05:00",
+    }))
+
+    resp = client.get("/summaries")
+    html = resp.data.decode()
+    assert "42" in html and "processed" in html
+    assert "3" in html and "need attention" in html
+    assert "5" in html and "unfiled" in html
+    assert "Run Jul 16, 2026 at 09:05 AM" in html
+
+
+def test_summaries_page_omits_stats_without_sidecar(client):
+    summary_dir = flask_app_module.SUMMARY_DIR
+    (summary_dir / "email_summary_2026-07-16.html").write_text("<html></html>")
+
+    resp = client.get("/summaries")
+    html = resp.data.decode()
+    assert "summary-stats" not in html
+    assert "summary-generated-at" not in html
 
 
 def test_rules_page_returns_200(client):

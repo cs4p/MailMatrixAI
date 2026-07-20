@@ -78,6 +78,7 @@
   let currentQuery = '';
   let currentVisible = [];   // groups (with filtered senders/domainRules) matching activeLabel/currentQuery
   let renderedCount = 0;
+  const collapsedDomains = new Set();   // persists across re-renders
 
   let editAddress = '';
   let editOldFullLabel = '';
@@ -151,6 +152,19 @@
     const header = document.createElement('div');
     header.className = 'domain-header';
 
+    const collapsed = collapsedDomains.has(group.domain);
+    const toggleBtn = document.createElement('button');
+    toggleBtn.className = 'domain-toggle';
+    toggleBtn.type = 'button';
+    toggleBtn.setAttribute('aria-label', collapsed ? 'Expand' : 'Collapse');
+    toggleBtn.textContent = collapsed ? '▸' : '▾';
+    toggleBtn.addEventListener('click', () => {
+      if (collapsedDomains.has(group.domain)) collapsedDomains.delete(group.domain);
+      else collapsedDomains.add(group.domain);
+      el.replaceWith(renderGroupEl(view));
+    });
+    header.appendChild(toggleBtn);
+
     const nameSpan = document.createElement('span');
     nameSpan.className = 'domain-name';
     nameSpan.textContent = group.domain;
@@ -195,6 +209,7 @@
     }
 
     el.appendChild(header);
+    if (collapsed) return el;
 
     domainRules.forEach(rule => {
       const row = document.createElement('div');
