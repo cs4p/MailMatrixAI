@@ -12,6 +12,20 @@ function escAttr(s) {
   return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;');
 }
 
+// POST JSON with the X-Requested-With header the server's CSRF check requires;
+// resolves to the parsed JSON body.
+async function postJSON(url, body) {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Requested-With': 'XMLHttpRequest',
+    },
+    body: JSON.stringify(body || {}),
+  });
+  return res.json();
+}
+
 let _toastTimer;
 function showToast(msg, type = 'success') {
   const el = document.getElementById('toast');

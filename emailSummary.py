@@ -15,6 +15,7 @@ from typing import Callable, Dict, List, Optional
 
 import anthropic
 from commonFunctions import (
+    add_sender_to_label_rule,
     connect_to_imap,
     decode_header_value,
     extract_body_snippet,
@@ -618,19 +619,7 @@ def accept_filing(
             with open(rules_path, 'r', encoding='utf-8') as f:
                 rules = json.load(f)
 
-            for entry in rules.get('labels', []):
-                if entry['labelName'] == label:
-                    addrs = entry.setdefault('emailAddresses', [])
-                    if from_addr not in addrs:
-                        addrs.append(from_addr)
-                        addrs.sort()
-                    break
-            else:
-                rules.setdefault('labels', []).append({
-                    'labelName': label,
-                    'emailAddresses': [from_addr],
-                    'emailDomains': [],
-                })
+            add_sender_to_label_rule(rules, from_addr, label)
 
             with open(rules_path, 'w', encoding='utf-8') as f:
                 json.dump(rules, f, indent=2, ensure_ascii=False)

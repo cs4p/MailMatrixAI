@@ -1,3 +1,4 @@
+import base64
 import email
 import imaplib
 import json
@@ -6,14 +7,16 @@ import os
 import random
 import re
 import shutil
+import smtplib
 import threading
 import time
 from collections import defaultdict
 from datetime import date, datetime, timedelta
+from email import policy as email_policy
 from email.header import decode_header as _decode_header
-from email.message import Message
+from email.message import EmailMessage, Message
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Union
+from typing import Callable, Dict, List, Optional, Tuple, Union
 
 import keyring
 
@@ -164,6 +167,28 @@ def validate_label(label: str) -> bool:
         and '\n' not in label
         and '\r' not in label
     )
+
+
+def validate_folder(name: str) -> bool:
+    """Like validate_label but for any IMAP folder (Sent, Trash, ...) — still
+    rejects quoting/CRLF injection and traversal, not just non-category names."""
+    return bool(
+        name
+        and len(name) <= 500
+        and '"' not in name
+        and '\\' not in name
+        and '\n' not in name
+        and '\r' not in name
+        and '..' not in name
+        and not name.startswith('/')
+    )
+
+
+def validate_new_folder_name(name: str) -> bool:
+    """Folder creation is restricted to printable ASCII: browsing decodes
+    modified-UTF-7 names for display, but there is no encode path, so a
+    non-ASCII name would be created with the wrong on-the-wire bytes."""
+    return validate_folder(name) and all(32 <= ord(c) < 127 for c in name)
 
 
 def _is_rate_limit_error(exc: Exception) -> bool:
@@ -352,13 +377,18 @@ def imap_date(d: date) -> str:
 # First FETCH response tuple of each message starts with its sequence number.
 _FETCH_MSGNUM_RE = re.compile(rb"^(\d+)\s+\(")
 
+# In UID FETCH responses the stable identifier is the UID item, not the leading
+# sequence number; FLAGS ride along in the same response prefix.
+_FETCH_UID_RE = re.compile(rb"UID (\d+)")
+_FETCH_FLAGS_RE = re.compile(rb"FLAGS \(([^)]*)\)")
+
 # Messages fetched per FETCH command in fetch_many() — module-level so tests
 # (and callers that need finer progress granularity) can override it.
 FETCH_CHUNK_SIZE = 100
 
 
 def fetch_many(imap, msg_ids: List[bytes], parts: str,
-               chunk_size: Optional[int] = None) -> Dict[bytes, dict]:
+               chunk_size: Optional[int] = None, use_uid: bool = False) -> Dict[bytes, dict]:
     """Fetch `parts` for many message sequence numbers with batched FETCH
     commands (comma-joined ID sets) instead of one round trip per message.
 
@@ -368,26 +398,49 @@ def fetch_many(imap, msg_ids: List[bytes], parts: str,
     because servers echo a partial request like BODY[TEXT]<0.2000> back as
     BODY[TEXT]<0>. Only valid while no expunge happens between the caller's
     SEARCH and this fetch (sequence numbers must stay stable).
+
+    With use_uid=True, msg_ids are UIDs, the fetch runs as UID FETCH, results
+    are keyed by UID (stable across expunges), and each record gains a "flags"
+    key holding the raw FLAGS bytes when the server included them.
     """
     chunk_size = chunk_size or FETCH_CHUNK_SIZE
     results: Dict[bytes, dict] = {}
     for start in range(0, len(msg_ids), chunk_size):
         id_set = b",".join(msg_ids[start:start + chunk_size])
-        status, data = imap_call(lambda s=id_set: imap.fetch(s, parts))
+        if use_uid:
+            status, data = imap_call(lambda s=id_set: imap.uid('FETCH', s.decode(), parts))
+        else:
+            status, data = imap_call(lambda s=id_set: imap.fetch(s, parts))
         if status != 'OK' or not data:
             continue
         current = None
         for item in data:
             if not isinstance(item, tuple) or len(item) < 2:
+                # A FLAGS-only response has no literal, so it arrives as plain
+                # bytes rather than a tuple — capture it before ending the
+                # current message.
+                if use_uid and isinstance(item, bytes):
+                    um = _FETCH_UID_RE.search(item)
+                    fm = _FETCH_FLAGS_RE.search(item)
+                    if um and fm:
+                        rec = results.setdefault(
+                            um.group(1), {"header": None, "text": None, "flags": None})
+                        rec["flags"] = fm.group(1)
                 current = None  # bare b')' (or other noise) ends the message
                 continue
             prefix, payload = item[0], item[1]
             if not isinstance(prefix, bytes):
                 continue
-            m = _FETCH_MSGNUM_RE.match(prefix)
+            m = _FETCH_UID_RE.search(prefix) if use_uid else _FETCH_MSGNUM_RE.match(prefix)
             if m:
                 current = m.group(1)
-                results.setdefault(current, {"header": None, "text": None})
+                if use_uid:
+                    rec = results.setdefault(current, {"header": None, "text": None, "flags": None})
+                    fm = _FETCH_FLAGS_RE.search(prefix)
+                    if fm:
+                        rec["flags"] = fm.group(1)
+                else:
+                    results.setdefault(current, {"header": None, "text": None})
             if current is None:
                 continue
             if b"HEADER" in prefix:
@@ -638,6 +691,25 @@ def resolve_duplicate_address(data: dict, address: str, keep_label: str) -> int:
     return removed
 
 
+def add_sender_to_label_rule(data: dict, from_addr: str, label: str) -> None:
+    """Add a sender→label rule, creating the label entry if needed (idempotent).
+
+    Callers hold rules_lock around the surrounding read-modify-write.
+    """
+    for entry in data.get('labels', []):
+        if entry['labelName'] == label:
+            addrs = entry.setdefault('emailAddresses', [])
+            if from_addr not in addrs:
+                addrs.append(from_addr)
+                addrs.sort()
+            return
+    data.setdefault('labels', []).append({
+        'labelName': label,
+        'emailAddresses': [from_addr],
+        'emailDomains': [],
+    })
+
+
 def update_sender_rule(data: dict, address: str, old_full_label: str, new_full_label: str) -> None:
     """Move a sender address from one label entry to another, creating the new one if needed."""
     for entry in data.get("labels", []):
@@ -749,3 +821,276 @@ def move_imap_messages(address: str, from_full_label: str, to_full_label: str,
         return {"ok": False, "error": str(exc), "moved": 0}
     finally:
         imap.logout()
+
+
+# ── Mail-client helpers (UID-based, used by app.py's /api/mail routes) ────────
+
+# LIST response line: (\Flags...) "delimiter" "Folder Name"  — the folder name
+# may be unquoted when it has no specials. Unlike _LIST_RE this captures the
+# flags group, which carries SPECIAL-USE attributes and \Noselect.
+_LIST_FULL_RE = re.compile(rb'^\(([^)]*)\)\s+"([^"]*)"\s+"?(.*?)"?$')
+
+# RFC 6154 SPECIAL-USE attribute → the client's folder role.
+_SPECIAL_USE_MAP = {
+    '\\sent': 'sent',
+    '\\trash': 'trash',
+    '\\junk': 'spam',
+    '\\drafts': 'drafts',
+    '\\archive': 'archive',
+    '\\flagged': 'starred',
+    '\\all': 'all',
+}
+
+# Fallback when the server omits SPECIAL-USE attributes from plain LIST.
+_SPECIAL_NAME_FALLBACK = {
+    'sent': 'sent', 'sent items': 'sent', 'sent messages': 'sent',
+    'drafts': 'drafts',
+    'trash': 'trash', 'deleted items': 'trash',
+    'spam': 'spam', 'junk': 'spam', 'junk mail': 'spam',
+    'archive': 'archive',
+}
+
+
+def decode_modified_utf7(name: str) -> str:
+    """Decode an IMAP modified-UTF-7 folder name (RFC 3501 §5.1.3) for display.
+
+    Display only — there is deliberately no encode counterpart; the raw wire
+    name is the canonical folder identifier everywhere else.
+    """
+    out = []
+    i = 0
+    while i < len(name):
+        ch = name[i]
+        if ch != '&':
+            out.append(ch)
+            i += 1
+            continue
+        end = name.find('-', i)
+        if end == -1:  # unterminated shift — leave the rest as-is
+            out.append(name[i:])
+            break
+        b64 = name[i + 1:end]
+        if not b64:
+            out.append('&')  # "&-" is a literal ampersand
+        else:
+            try:
+                padded = b64.replace(',', '/')
+                padded += '=' * (-len(padded) % 4)
+                out.append(base64.b64decode(padded).decode('utf-16-be'))
+            except Exception:
+                out.append(name[i:end + 1])
+        i = end + 1
+    return ''.join(out)
+
+
+def list_folders(imap) -> List[dict]:
+    """List every folder with its flags, hierarchy delimiter, special-use role,
+    and selectability — the full-tree counterpart of get_all_labels()."""
+    status, data = imap_call(lambda: imap.list())
+    if status != 'OK':
+        return []
+    folders = []
+    for item in data:
+        if not isinstance(item, bytes):
+            continue
+        m = _LIST_FULL_RE.match(item)
+        if not m:
+            continue
+        flags = m.group(1).decode(errors='replace').split()
+        delimiter = m.group(2).decode(errors='replace')
+        name = m.group(3).decode(errors='replace')
+        if not name:
+            continue
+        special = None
+        for flag in flags:
+            special = _SPECIAL_USE_MAP.get(flag.lower())
+            if special:
+                break
+        if special is None:
+            special = _SPECIAL_NAME_FALLBACK.get(name.lower())
+        folders.append({
+            'name': name,
+            'display': decode_modified_utf7(name),
+            'delimiter': delimiter,
+            'flags': flags,
+            'special': special,
+            'selectable': not any(f.lower() == '\\noselect' for f in flags),
+        })
+    folders.sort(key=lambda f: f['name'].lower())
+    return folders
+
+
+def uid_search_all(imap, folder: str) -> List[bytes]:
+    """Readonly-select `folder` and return every message UID, ascending."""
+    status, _ = imap_call(lambda: imap.select(f'"{folder}"', readonly=True))
+    if status != 'OK':
+        raise imaplib.IMAP4.error(f"Cannot select folder {folder}")
+    status, data = imap_call(lambda: imap.uid('SEARCH', None, 'ALL'))
+    if status != 'OK' or not data or not data[0]:
+        return []
+    return data[0].split()
+
+
+_SCRIPT_RE = re.compile(r"<script\b[^>]*>.*?(</script\s*>|\Z)", re.I | re.S)
+
+
+def _safe_filename(name: str) -> str:
+    """Reduce an attachment filename to a safe basename for Content-Disposition."""
+    name = decode_header_value(name)
+    name = os.path.basename(name.replace('\\', '/'))
+    name = ''.join(c for c in name if c.isprintable())
+    return name.strip() or 'attachment'
+
+
+_MESSAGE_HEADER_KEYS = {
+    'from': 'From', 'to': 'To', 'cc': 'Cc', 'subject': 'Subject', 'date': 'Date',
+    'message_id': 'Message-ID', 'in_reply_to': 'In-Reply-To', 'references': 'References',
+}
+
+
+def extract_message_parts(raw: bytes) -> dict:
+    """Split a full RFC822 message into headers, viewable bodies, and
+    attachment metadata.
+
+    Returns {"headers": {from,to,cc,subject,date,message_id,in_reply_to,
+    references}, "text": str|None, "html": str|None, "attachments": [{part,
+    filename, content_type, size}]}. The part index is the part's position in
+    msg.walk() order — stable for identical raw bytes, which is what
+    get_attachment() relies on. HTML has <script> blocks stripped as defense
+    in depth; the sandboxed iframe on the client is the primary barrier.
+    """
+    try:
+        msg = email.message_from_bytes(raw, policy=email_policy.default)
+    except Exception:
+        return {'headers': {k: '' for k in _MESSAGE_HEADER_KEYS},
+                'text': raw.decode(errors='replace'), 'html': None, 'attachments': []}
+
+    headers = {}
+    for key, header_name in _MESSAGE_HEADER_KEYS.items():
+        try:
+            headers[key] = str(msg.get(header_name) or '')
+        except Exception:  # a single defective header shouldn't sink the view
+            headers[key] = ''
+
+    text = html = None
+    attachments = []
+    for idx, part in enumerate(msg.walk()):
+        if part.get_content_maintype() == 'multipart':
+            continue
+        try:
+            filename = part.get_filename()
+            disposition = part.get_content_disposition()
+        except Exception:
+            filename, disposition = None, None
+        if filename or disposition == 'attachment':
+            try:
+                payload = part.get_payload(decode=True) or b''
+            except Exception:
+                payload = b''
+            attachments.append({
+                'part': idx,
+                'filename': _safe_filename(filename or f'attachment-{idx}'),
+                'content_type': part.get_content_type(),
+                'size': len(payload),
+            })
+            continue
+        if part.get_content_type() == 'text/plain' and text is None:
+            text = _decode_mime_part(part)
+        elif part.get_content_type() == 'text/html' and html is None:
+            html = _decode_mime_part(part)
+
+    if html is not None:
+        html = _SCRIPT_RE.sub('', html)
+    return {'headers': headers, 'text': text, 'html': html, 'attachments': attachments}
+
+
+def get_attachment(raw: bytes, part_index: int) -> Optional[Tuple[str, str, bytes]]:
+    """Return (safe_filename, content_type, payload) for the attachment at
+    `part_index` in msg.walk() order (matching extract_message_parts), or None."""
+    try:
+        msg = email.message_from_bytes(raw, policy=email_policy.default)
+    except Exception:
+        return None
+    for idx, part in enumerate(msg.walk()):
+        if idx != part_index:
+            continue
+        if part.get_content_maintype() == 'multipart':
+            return None
+        try:
+            payload = part.get_payload(decode=True)
+        except Exception:
+            payload = None
+        try:
+            filename = part.get_filename()
+        except Exception:
+            filename = None
+        return (
+            _safe_filename(filename or f'attachment-{idx}'),
+            part.get_content_type(),
+            payload or b'',
+        )
+    return None
+
+
+def move_message_uid(imap, source_folder: str, uid: str, target_folder: str) -> dict:
+    """Move one message (by UID) between folders on an already-connected client.
+
+    Fetches the sender server-side (for rule creation — never trusted from the
+    client), then UID COPY → only on OK: \\Deleted + UID EXPUNGE (plain EXPUNGE
+    fallback for servers without UIDPLUS). A failed copy never destroys the
+    original. Returns {"ok", "from_addr", "error"?}.
+    """
+    status, _ = imap_call(lambda: imap.select(f'"{source_folder}"'))
+    if status != 'OK':
+        return {'ok': False, 'from_addr': '', 'error': f'Cannot select {source_folder}'}
+
+    status, data = imap_call(
+        lambda: imap.uid('FETCH', uid, '(BODY.PEEK[HEADER.FIELDS (FROM)])'))
+    from_addr = ''
+    found = False
+    if status == 'OK' and data:
+        for item in data:
+            if isinstance(item, tuple) and len(item) >= 2 and isinstance(item[1], bytes):
+                found = True
+                headers = parse_headers(item[1].decode(errors='replace'))
+                if headers.get('from'):
+                    from_addr = extract_email_address(headers['from'])
+                break
+    if not found:
+        return {'ok': False, 'from_addr': '', 'error': 'Message not found'}
+
+    st, _ = imap_call(lambda: imap.uid('COPY', uid, f'"{target_folder}"'))
+    if st != 'OK':
+        # Never delete the original unless the copy actually succeeded.
+        log.error("UID COPY %s → %s failed — leaving the message in %s",
+                  uid, target_folder, source_folder)
+        return {'ok': False, 'from_addr': from_addr,
+                'error': f'Copy to {target_folder} failed'}
+
+    imap_call(lambda: imap.uid('STORE', uid, '+FLAGS', r'\Deleted'))
+    try:
+        st, _ = imap_call(lambda: imap.uid('EXPUNGE', uid))
+        if st != 'OK':
+            raise imaplib.IMAP4.error(f'UID EXPUNGE answered {st}')
+    except imaplib.IMAP4.error:
+        # No UIDPLUS: plain EXPUNGE also removes any other \Deleted messages
+        # in the folder — rare outside exotic servers, so just warn.
+        log.warning("UID EXPUNGE unavailable in %s — falling back to plain EXPUNGE",
+                    source_folder)
+        imap_call(lambda: imap.expunge())
+    return {'ok': True, 'from_addr': from_addr}
+
+
+def send_smtp(server: str, port: int, username: str, password: str, msg: EmailMessage) -> None:
+    """Send msg over SMTP — implicit TLS on port 465, STARTTLS otherwise.
+    Raises smtplib exceptions on failure; the caller maps them to API errors."""
+    log.info("Sending mail via SMTP %s:%d as %s", server, port, username)
+    if port == 465:
+        with smtplib.SMTP_SSL(server, port) as smtp:
+            smtp.login(username, password)
+            smtp.send_message(msg)
+    else:
+        with smtplib.SMTP(server, port) as smtp:
+            smtp.starttls()
+            smtp.login(username, password)
+            smtp.send_message(msg)

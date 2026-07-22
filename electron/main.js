@@ -2,7 +2,7 @@
 // localhost port using the repo's Python venv, then opens it in a
 // BrowserWindow. The page is plain server-rendered HTML making same-origin
 // fetches, so no preload script is needed and context isolation stays on.
-const { app, BrowserWindow } = require('electron');
+const { app, BrowserWindow, shell } = require('electron');
 const { spawn } = require('child_process');
 const http = require('http');
 const net = require('net');
@@ -79,6 +79,13 @@ async function start() {
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
   });
   win.once('ready-to-show', () => win.show());
+
+  // Links in rendered email bodies (sandboxed iframe, target="_blank") open in
+  // the user's default browser rather than a new Electron window.
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:/i.test(url)) shell.openExternal(url);
+    return { action: 'deny' };
+  });
 
   const fail = (msg, detail) => win.loadFile(path.join(__dirname, 'error.html'), {
     query: { msg, detail: (detail || '').slice(-4000) },

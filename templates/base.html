@@ -12,7 +12,8 @@
       <a class="nav-logo" href="/">MailMatrix<span class="nav-logo-ai">AI</span></a>
       <div class="nav-links">
         <a href="/" class="{{ 'active' if request.path == '/' }}">Dashboard</a>
-        <a href="/inbox" class="{{ 'active' if request.path == '/inbox' }}">Inbox</a>
+        <a href="/mail" class="{{ 'active' if request.path == '/mail' }}">Mail</a>
+        <a href="/inbox" class="{{ 'active' if request.path == '/inbox' }}">AI Inbox</a>
         <a href="/summaries" class="{{ 'active' if request.path.startswith('/summaries') }}">Summaries</a>
         <a href="/rules" class="{{ 'active' if request.path == '/rules' }}">Rules</a>
         <a href="/cleanup" class="{{ 'active' if request.path == '/cleanup' }}">Cleanup</a>
@@ -21,7 +22,7 @@
     </div>
   </nav>
 
-  <main class="main">
+  <main class="main{% block main_class %}{% endblock %}">
     {% block content %}{% endblock %}
   </main>
 
