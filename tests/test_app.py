@@ -1088,3 +1088,369 @@ def test_api_sort_invalidates_inbox_count_cache(client, mock_imap):
         client.get("/api/inbox-stats")
 
     assert mock_connect.call_count == 2  # cache was invalidated by the sort
+
+
+# ── /api/mail/* (mail client) ──────────────────────────────────────────────────
+
+MAIL_ENV = {"IMAP_SERVER": "imap.fastmail.com", "IMAP_USERNAME": "me@fastmail.com",
+            "IMAP_PASSWORD": "pw"}
+
+
+def _mail_env_patch():
+    return patch.dict(os.environ, MAIL_ENV)
+
+
+def _folders_imap():
+    imap = MagicMock()
+    imap.list.return_value = ("OK", [
+        rb'(\HasNoChildren) "/" "INBOX"',
+        rb'(\HasNoChildren \Sent) "/" "Sent"',
+        rb'(\HasNoChildren \Trash) "/" "Trash"',
+        rb'(\Noselect \HasChildren) "/" "Parent"',
+        rb'(\HasNoChildren) "/" "MailMatrixCategories/Work"',
+    ])
+    imap.logout.return_value = ("BYE", [b""])
+    return imap
+
+
+def test_mail_page_renders(client):
+    with _mail_env_patch():
+        resp = client.get("/mail")
+    assert resp.status_code == 200
+    assert b"mail-layout" in resp.data
+
+
+def test_mail_folders_lists_and_marks_noselect(client):
+    flask_app_module._invalidate_folders_cache()
+    with _mail_env_patch(), patch("app.connect_to_imap", return_value=_folders_imap()):
+        data = client.get("/api/mail/folders").get_json()
+    assert data["ok"] is True
+    by_name = {f["name"]: f for f in data["folders"]}
+    assert by_name["Sent"]["special"] == "sent"
+    assert by_name["Parent"]["selectable"] is False
+
+
+def test_mail_folders_cached_and_invalidated_by_create(client):
+    flask_app_module._invalidate_folders_cache()
+    with _mail_env_patch(), patch("app.connect_to_imap", return_value=_folders_imap()) as conn:
+        client.get("/api/mail/folders")
+        client.get("/api/mail/folders")
+        assert conn.call_count == 1  # second call served from cache
+
+        create_imap = MagicMock()
+        create_imap.create.return_value = ("OK", [b"created"])
+        create_imap.logout.return_value = ("BYE", [b""])
+        with patch("app.connect_to_imap", return_value=create_imap):
+            r = client.post("/api/mail/folders/create", json={"name": "MailMatrixCategories/New"})
+            assert r.get_json()["ok"] is True
+
+        client.get("/api/mail/folders")
+        assert conn.call_count == 2  # cache was invalidated, re-fetched
+
+
+def test_mail_folders_requires_credentials(client):
+    flask_app_module._invalidate_folders_cache()
+    with patch.dict(os.environ, {"IMAP_SERVER": "", "IMAP_USERNAME": "", "IMAP_PASSWORD": ""}):
+        resp = client.get("/api/mail/folders")
+    assert resp.status_code == 400
+
+
+def _messages_imap(uids, headers_by_uid, flags_by_uid=None):
+    flags_by_uid = flags_by_uid or {}
+    imap = MagicMock()
+    imap.select.return_value = ("OK", [str(len(uids)).encode()])
+    imap.logout.return_value = ("BYE", [b""])
+
+    def _uid(cmd, *args):
+        if cmd == "SEARCH":
+            return ("OK", [b" ".join(uids)])
+        if cmd == "FETCH":
+            id_set = args[0]
+            data = []
+            for u in id_set.split(","):
+                ub = u.encode()
+                headers = headers_by_uid[u]
+                flags = flags_by_uid.get(u, b"")
+                prefix = b"1 (UID %s FLAGS (%s) BODY[HEADER.FIELDS (FROM SUBJECT DATE)] {%d}" % (
+                    ub, flags, len(headers))
+                data.append((prefix, headers))
+                data.append(b")")
+            return ("OK", data)
+        return ("OK", None)
+
+    imap.uid.side_effect = _uid
+    return imap
+
+
+def test_mail_messages_pagination_newest_first(client):
+    uids = [str(i).encode() for i in range(1, 121)]  # 120 messages
+    headers = {u.decode(): b"From: s%s@x.com\r\nSubject: Msg %s\r\nDate: Fri, 27 Jun 2026\r\n" % (u, u)
+               for u in uids}
+    imap = _messages_imap(uids, headers)
+    with _mail_env_patch(), patch("app.connect_to_imap", return_value=imap):
+        r = client.get("/api/mail/messages?folder=INBOX&page=1&page_size=50")
+    data = r.get_json()
+    assert data["ok"] is True
+    assert data["total"] == 120
+    assert len(data["messages"]) == 50
+    assert data["messages"][0]["uid"] == "120"  # newest first
+    assert data["messages"][-1]["uid"] == "71"
+
+
+def test_mail_messages_second_page(client):
+    uids = [str(i).encode() for i in range(1, 121)]
+    headers = {u.decode(): b"From: s@x.com\r\nSubject: x\r\nDate: d\r\n" for u in uids}
+    imap = _messages_imap(uids, headers)
+    with _mail_env_patch(), patch("app.connect_to_imap", return_value=imap):
+        data = client.get("/api/mail/messages?folder=INBOX&page=2&page_size=50").get_json()
+    assert data["messages"][0]["uid"] == "70"
+    assert len(data["messages"]) == 50
+
+
+def test_mail_messages_seen_flag(client):
+    uids = [b"1", b"2"]
+    headers = {"1": b"From: a@x.com\r\nSubject: x\r\nDate: d\r\n",
+               "2": b"From: b@x.com\r\nSubject: y\r\nDate: d\r\n"}
+    imap = _messages_imap(uids, headers, {"1": b"\\Seen", "2": b""})
+    with _mail_env_patch(), patch("app.connect_to_imap", return_value=imap):
+        data = client.get("/api/mail/messages?folder=INBOX").get_json()
+    by_uid = {m["uid"]: m for m in data["messages"]}
+    assert by_uid["1"]["seen"] is True
+    assert by_uid["2"]["seen"] is False
+
+
+def test_mail_messages_empty_folder(client):
+    imap = _messages_imap([], {})
+    with _mail_env_patch(), patch("app.connect_to_imap", return_value=imap):
+        data = client.get("/api/mail/messages?folder=INBOX").get_json()
+    assert data["total"] == 0
+    assert data["messages"] == []
+
+
+def test_mail_messages_invalid_folder(client):
+    with _mail_env_patch():
+        resp = client.get('/api/mail/messages?folder=bad"name')
+    assert resp.status_code == 400
+
+
+def _full_message_bytes():
+    from email.message import EmailMessage
+    msg = EmailMessage()
+    msg["From"] = "Alice <alice@example.com>"
+    msg["To"] = "me@fastmail.com"
+    msg["Subject"] = "Hello"
+    msg["Date"] = "Fri, 27 Jun 2026 10:00:00 +0000"
+    msg["Message-ID"] = "<abc@example.com>"
+    msg.set_content("Plain text body.")
+    msg.add_alternative("<p>HTML body</p>", subtype="html")
+    msg.add_attachment(b"PDFDATA", maintype="application", subtype="pdf", filename="doc.pdf")
+    return msg.as_bytes()
+
+
+def _message_imap(raw):
+    imap = MagicMock()
+    imap.select.return_value = ("OK", [b"1"])
+    imap.logout.return_value = ("BYE", [b""])
+
+    def _uid(cmd, *args):
+        if cmd == "FETCH":
+            return ("OK", [(b"1 (UID 5 BODY[] {%d}" % len(raw), raw), b")"])
+        if cmd == "STORE":
+            return ("OK", [None])
+        return ("OK", None)
+
+    imap.uid.side_effect = _uid
+    return imap
+
+
+def test_mail_message_view_and_marks_seen(client):
+    imap = _message_imap(_full_message_bytes())
+    with _mail_env_patch(), patch("app.connect_to_imap", return_value=imap):
+        data = client.get("/api/mail/message?folder=INBOX&uid=5").get_json()
+    assert data["ok"] is True
+    assert data["headers"]["from"] == "Alice <alice@example.com>"
+    assert data["headers"]["message_id"] == "<abc@example.com>"
+    assert "Plain text body." in data["body_text"]
+    assert "HTML body" in data["body_html"]
+    assert len(data["attachments"]) == 1
+    # \Seen store was issued
+    store_calls = [c for c in imap.uid.call_args_list if c.args[0] == "STORE"]
+    assert store_calls and "\\Seen" in store_calls[0].args
+
+
+def test_mail_message_not_found(client):
+    imap = MagicMock()
+    imap.select.return_value = ("OK", [b"1"])
+    imap.uid.return_value = ("OK", [None])
+    imap.logout.return_value = ("BYE", [b""])
+    with _mail_env_patch(), patch("app.connect_to_imap", return_value=imap):
+        resp = client.get("/api/mail/message?folder=INBOX&uid=5")
+    assert resp.status_code == 404
+
+
+def test_mail_message_invalid_uid(client):
+    with _mail_env_patch():
+        resp = client.get("/api/mail/message?folder=INBOX&uid=notanumber")
+    assert resp.status_code == 400
+
+
+def test_mail_attachment_download(client):
+    raw = _full_message_bytes()
+    from commonFunctions import extract_message_parts
+    part = extract_message_parts(raw)["attachments"][0]["part"]
+    imap = _message_imap(raw)
+    with _mail_env_patch(), patch("app.connect_to_imap", return_value=imap):
+        resp = client.get(f"/api/mail/attachment?folder=INBOX&uid=5&part={part}")
+    assert resp.status_code == 200
+    assert resp.data == b"PDFDATA"
+    assert "attachment" in resp.headers["Content-Disposition"]
+    assert "doc.pdf" in resp.headers["Content-Disposition"]
+    assert resp.headers["Content-Type"] == "application/octet-stream"
+
+
+def test_mail_attachment_bad_part_404(client):
+    imap = _message_imap(_full_message_bytes())
+    with _mail_env_patch(), patch("app.connect_to_imap", return_value=imap):
+        resp = client.get("/api/mail/attachment?folder=INBOX&uid=5&part=999")
+    assert resp.status_code == 404
+
+
+def _move_imap():
+    imap = MagicMock()
+    imap.select.return_value = ("OK", [b"1"])
+    imap.logout.return_value = ("BYE", [b""])
+
+    def _uid(cmd, *args):
+        if cmd == "FETCH":
+            return ("OK", [(b"1 (UID 5 BODY[HEADER.FIELDS (FROM)] {26}",
+                            b"From: mover@example.com\r\n"), b")"])
+        return ("OK", None)
+
+    imap.uid.side_effect = _uid
+    imap.expunge.return_value = ("OK", None)
+    return imap
+
+
+def test_mail_move_to_plain_folder_no_rule(client):
+    imap = _move_imap()
+    with _mail_env_patch(), patch("app.connect_to_imap", return_value=imap):
+        data = client.post("/api/mail/move",
+                           json={"folder": "INBOX", "uid": "5", "target": "Trash"}).get_json()
+    assert data["ok"] is True
+    assert data["rule_created"] is False
+    # rules file untouched
+    rules = json.loads(flask_app_module.RULES_PATH.read_text())
+    assert all("mover@example.com" not in e.get("emailAddresses", []) for e in rules["labels"])
+
+
+def test_mail_move_to_category_creates_rule(client):
+    imap = _move_imap()
+    with _mail_env_patch(), patch("app.connect_to_imap", return_value=imap):
+        data = client.post("/api/mail/move",
+                           json={"folder": "INBOX", "uid": "5",
+                                 "target": "MailMatrixCategories/Work"}).get_json()
+    assert data["ok"] is True
+    assert data["rule_created"] is True
+    assert data["from_addr"] == "mover@example.com"
+    rules = json.loads(flask_app_module.RULES_PATH.read_text())
+    work = next(e for e in rules["labels"] if e["labelName"] == "MailMatrixCategories/Work")
+    assert "mover@example.com" in work["emailAddresses"]
+
+
+def test_mail_move_copy_failure_leaves_message(client):
+    imap = MagicMock()
+    imap.select.return_value = ("OK", [b"1"])
+    imap.logout.return_value = ("BYE", [b""])
+
+    def _uid(cmd, *args):
+        if cmd == "FETCH":
+            return ("OK", [(b"1 (UID 5 BODY[HEADER.FIELDS (FROM)] {26}",
+                            b"From: mover@example.com\r\n"), b")"])
+        if cmd == "COPY":
+            return ("NO", [b"over quota"])
+        return ("OK", None)
+
+    imap.uid.side_effect = _uid
+    with _mail_env_patch(), patch("app.connect_to_imap", return_value=imap):
+        resp = client.post("/api/mail/move",
+                           json={"folder": "INBOX", "uid": "5", "target": "Archive"})
+    assert resp.status_code == 502
+    cmds = [c.args[0] for c in imap.uid.call_args_list]
+    assert "STORE" not in cmds  # message never flagged deleted
+
+
+def test_mail_move_same_folder_rejected(client):
+    with _mail_env_patch():
+        resp = client.post("/api/mail/move",
+                           json={"folder": "INBOX", "uid": "5", "target": "INBOX"})
+    assert resp.status_code == 400
+
+
+def test_mail_send_happy_path_saves_sent_copy(client):
+    sent_imap = _folders_imap()
+    sent_imap.append.return_value = ("OK", [b"appended"])
+    with (
+        _mail_env_patch(),
+        patch("app.send_smtp") as mock_send,
+        patch("app.connect_to_imap", return_value=sent_imap),
+    ):
+        data = client.post("/api/mail/send", json={
+            "to": "bob@example.com",
+            "subject": "Hi",
+            "body": "Hello there",
+        }).get_json()
+    assert data["ok"] is True
+    assert data["sent_copy_saved"] is True
+    mock_send.assert_called_once()
+    sent_imap.append.assert_called_once()
+
+
+def test_mail_send_ok_even_if_sent_copy_fails(client):
+    sent_imap = _folders_imap()
+    sent_imap.append.return_value = ("NO", [b"cannot append"])
+    with (
+        _mail_env_patch(),
+        patch("app.send_smtp"),
+        patch("app.connect_to_imap", return_value=sent_imap),
+    ):
+        data = client.post("/api/mail/send", json={
+            "to": "bob@example.com", "subject": "Hi", "body": "Hello",
+        }).get_json()
+    assert data["ok"] is True
+    assert data["sent_copy_saved"] is False
+
+
+def test_mail_send_missing_recipient(client):
+    with _mail_env_patch():
+        resp = client.post("/api/mail/send", json={"subject": "x", "body": "y"})
+    assert resp.status_code == 400
+
+
+def test_mail_send_invalid_recipient(client):
+    with _mail_env_patch():
+        resp = client.post("/api/mail/send",
+                           json={"to": "bad\"addr@x.com", "subject": "x", "body": "y"})
+    assert resp.status_code == 400
+
+
+def test_mail_send_crlf_in_subject_rejected(client):
+    with _mail_env_patch():
+        resp = client.post("/api/mail/send", json={
+            "to": "bob@example.com", "subject": "x\r\nBcc: evil@x.com", "body": "y",
+        })
+    assert resp.status_code == 400
+
+
+def test_mail_folders_create_invalid_name(client):
+    with _mail_env_patch():
+        resp = client.post("/api/mail/folders/create", json={"name": "Résumés"})
+    assert resp.status_code == 400
+
+
+def test_mail_move_requires_csrf_header(client):
+    # Explicitly drop the auto-added header for this one request.
+    with _mail_env_patch():
+        resp = client.post("/api/mail/move",
+                           json={"folder": "INBOX", "uid": "5", "target": "Trash"},
+                           headers={"X-Requested-With": ""})
+    assert resp.status_code == 403

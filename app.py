@@ -1,11 +1,15 @@
 import logging
 import os
+import re
 import subprocess
 import sys
 import threading
 import time
 import uuid
 from datetime import date
+from email.message import EmailMessage
+from email.utils import formatdate, make_msgid
+from io import BytesIO
 from pathlib import Path
 
 from dotenv import load_dotenv, dotenv_values
@@ -15,6 +19,7 @@ import commonFunctions
 from emailSummary import accept_filing, analyze_with_claude, deduplicate_inbox_emails
 from cleanupRules import find_domain_collapsible, find_duplicate_addresses
 from commonFunctions import (
+    add_sender_to_label_rule,
     build_rule_groups,
     collapse_domain_rule,
     connect_to_imap,
@@ -24,20 +29,29 @@ from commonFunctions import (
     delete_rule,
     extract_body_snippet,
     extract_email_address,
+    extract_message_parts,
     fetch_many,
     full_label_name,
     get_all_labels,
+    get_attachment,
     get_credential,
     imap_call as _imap_call,
+    list_folders,
     load_rules_file,
     move_imap_messages,
+    move_message_uid,
     parse_headers,
     resolve_duplicate_address,
     save_rules_file,
+    send_smtp,
     set_credential,
     setup_logging,
     summary_files,
+    uid_search_all,
     update_sender_rule,
+    validate_email_address,
+    validate_folder,
+    validate_new_folder_name,
     validate_label,
 )
 
@@ -82,7 +96,8 @@ RULES_PATH = BASE_DIR / "emailRules.json"
 SUMMARY_DIR = BASE_DIR / "emailSummary"
 ENV_PATH = BASE_DIR / ".env"
 _sort_lock = threading.Lock()
-_CREDENTIAL_KEYS = {"IMAP_SERVER", "IMAP_PORT", "IMAP_USERNAME", "IMAP_PASSWORD", "ANTHROPIC_API_KEY"}
+_CREDENTIAL_KEYS = {"IMAP_SERVER", "IMAP_PORT", "IMAP_USERNAME", "IMAP_PASSWORD",
+                    "SMTP_SERVER", "SMTP_PORT", "ANTHROPIC_API_KEY"}
 
 CLAUDE_BATCH_SIZE = 50
 _INBOX_JOB_MAX_AGE = 600  # seconds a finished job's state is kept around for polling
@@ -244,6 +259,8 @@ def config():
         "IMAP_PORT": get_credential("IMAP_PORT", "993"),
         "IMAP_USERNAME": get_credential("IMAP_USERNAME"),
         "IMAP_PASSWORD": get_credential("IMAP_PASSWORD"),
+        "SMTP_SERVER": get_credential("SMTP_SERVER"),
+        "SMTP_PORT": get_credential("SMTP_PORT"),
         "ANTHROPIC_API_KEY": get_credential("ANTHROPIC_API_KEY"),
     }
     return render_template("config.html", cfg=cfg)
@@ -682,6 +699,354 @@ def api_cleanup_resolve_duplicate():
         _save_rules(data)
     log.info("Duplicate resolved: kept <%s> in %s, removed from %d label(s)", address, keep_label, removed)
     return jsonify({"ok": True, "removed": removed})
+
+
+# ── Mail client (UID-based /api/mail surface for the /mail page) ─────────────
+
+# Folder list changes rarely but the sidebar asks for it on every page load —
+# cache it like the inbox count; folder creation invalidates.
+_FOLDERS_TTL = 60.0
+_folders_cache = {"value": None, "at": 0.0}
+_folders_lock = threading.Lock()
+
+_UID_RE = re.compile(r"^\d+$")
+_MAIL_PAGE_SIZE = 50
+
+
+def _invalidate_folders_cache() -> None:
+    with _folders_lock:
+        _folders_cache["value"] = None
+        _folders_cache["at"] = 0.0
+
+
+def _mail_imap():
+    """Connect for one /api/mail request. Returns (imap, None) on success or
+    (None, (response, status)) ready to return from the handler."""
+    server = get_credential("IMAP_SERVER")
+    user = get_credential("IMAP_USERNAME")
+    pw = get_credential("IMAP_PASSWORD")
+    port = int(get_credential("IMAP_PORT", "993") or "993")
+    if not (server and user and pw):
+        return None, (jsonify({"ok": False, "error": "IMAP credentials not configured"}), 400)
+    try:
+        return connect_to_imap(server, user, pw, port), None
+    except Exception as exc:
+        return None, (jsonify({"ok": False, "error": f"IMAP connection failed: {exc}"}), 502)
+
+
+def _fetch_full_message(imap, folder: str, uid: str, readonly: bool = True):
+    """Return the raw RFC822 bytes of one message via BODY.PEEK[], or None."""
+    status, _ = _imap_call(lambda: imap.select(f'"{folder}"', readonly=readonly))
+    if status != "OK":
+        return None
+    status, data = _imap_call(lambda: imap.uid("FETCH", uid, "(BODY.PEEK[])"))
+    if status != "OK" or not data:
+        return None
+    for item in data:
+        if isinstance(item, tuple) and len(item) >= 2 and isinstance(item[1], bytes):
+            return item[1]
+    return None
+
+
+@app.route("/mail")
+def mail():
+    # The client needs the user's own address to exclude it from Reply-All.
+    return render_template("mail.html", username=get_credential("IMAP_USERNAME"))
+
+
+@app.route("/api/mail/folders")
+def api_mail_folders():
+    with _folders_lock:
+        fresh = (
+            _folders_cache["value"] is not None
+            and time.monotonic() - _folders_cache["at"] < _FOLDERS_TTL
+        )
+        if fresh:
+            return jsonify({"ok": True, "folders": _folders_cache["value"]})
+
+    imap, err = _mail_imap()
+    if err:
+        return err
+    try:
+        folders = list_folders(imap)
+    except Exception as exc:
+        log.error("Folder list failed: %s", exc)
+        return jsonify({"ok": False, "error": str(exc)}), 502
+    finally:
+        imap.logout()
+
+    with _folders_lock:
+        _folders_cache["value"] = folders
+        _folders_cache["at"] = time.monotonic()
+    return jsonify({"ok": True, "folders": folders})
+
+
+@app.route("/api/mail/messages")
+def api_mail_messages():
+    folder = request.args.get("folder", "")
+    if not validate_folder(folder):
+        return jsonify({"ok": False, "error": "Invalid folder"}), 400
+    try:
+        page = max(1, int(request.args.get("page", "1")))
+        page_size = min(200, max(1, int(request.args.get("page_size", str(_MAIL_PAGE_SIZE)))))
+    except ValueError:
+        return jsonify({"ok": False, "error": "Invalid page"}), 400
+
+    imap, err = _mail_imap()
+    if err:
+        return err
+    try:
+        uids = uid_search_all(imap, folder)
+        total = len(uids)
+        page_uids = uids[::-1][(page - 1) * page_size: page * page_size]  # newest first
+        fetched = fetch_many(
+            imap, page_uids,
+            "(FLAGS BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE)])",
+            use_uid=True,
+        )
+        messages = []
+        for uid in page_uids:
+            entry = fetched.get(uid)
+            if not entry or entry.get("header") is None:
+                continue
+            headers = parse_headers(entry["header"].decode(errors="replace"))
+            flags = entry.get("flags") or b""
+            messages.append({
+                "uid": uid.decode(),
+                "from_display": headers["from"],
+                "from_addr": extract_email_address(headers["from"]),
+                "subject": headers["subject"] or "(no subject)",
+                "date": headers["date"],
+                "seen": b"\\Seen" in flags,
+            })
+        return jsonify({"ok": True, "folder": folder, "total": total,
+                        "page": page, "page_size": page_size, "messages": messages})
+    except Exception as exc:
+        log.error("Message list failed for %s: %s", folder, exc)
+        return jsonify({"ok": False, "error": str(exc)}), 502
+    finally:
+        imap.logout()
+
+
+@app.route("/api/mail/message")
+def api_mail_message():
+    folder = request.args.get("folder", "")
+    uid = request.args.get("uid", "")
+    if not validate_folder(folder) or not _UID_RE.match(uid):
+        return jsonify({"ok": False, "error": "Invalid folder or uid"}), 400
+
+    imap, err = _mail_imap()
+    if err:
+        return err
+    try:
+        raw = _fetch_full_message(imap, folder, uid, readonly=False)
+        if raw is None:
+            return jsonify({"ok": False, "error": "Message not found"}), 404
+        parts = extract_message_parts(raw)
+        # Opening a message marks it read — standard client behavior. Best
+        # effort: a failed STORE shouldn't fail the view.
+        try:
+            _imap_call(lambda: imap.uid("STORE", uid, "+FLAGS", "\\Seen"))
+        except Exception as exc:
+            log.warning("Could not mark %s uid %s as seen: %s", folder, uid, exc)
+        return jsonify({
+            "ok": True,
+            "uid": uid,
+            "headers": parts["headers"],
+            "body_text": parts["text"],
+            "body_html": parts["html"],
+            "attachments": parts["attachments"],
+        })
+    except Exception as exc:
+        log.error("Message fetch failed for %s uid %s: %s", folder, uid, exc)
+        return jsonify({"ok": False, "error": str(exc)}), 502
+    finally:
+        imap.logout()
+
+
+@app.route("/api/mail/attachment")
+def api_mail_attachment():
+    folder = request.args.get("folder", "")
+    uid = request.args.get("uid", "")
+    part = request.args.get("part", "")
+    if not validate_folder(folder) or not _UID_RE.match(uid) or not _UID_RE.match(part):
+        return jsonify({"ok": False, "error": "Invalid parameters"}), 400
+
+    imap, err = _mail_imap()
+    if err:
+        return err
+    try:
+        raw = _fetch_full_message(imap, folder, uid, readonly=True)
+        if raw is None:
+            return jsonify({"ok": False, "error": "Message not found"}), 404
+        attachment = get_attachment(raw, int(part))
+        if attachment is None:
+            return jsonify({"ok": False, "error": "Attachment not found"}), 404
+        filename, _content_type, payload = attachment
+        # Always octet-stream: server-fetched HTML/SVG must never render
+        # same-origin with the app.
+        return send_file(BytesIO(payload), as_attachment=True,
+                         download_name=filename, mimetype="application/octet-stream")
+    except Exception as exc:
+        log.error("Attachment fetch failed for %s uid %s part %s: %s", folder, uid, part, exc)
+        return jsonify({"ok": False, "error": str(exc)}), 502
+    finally:
+        imap.logout()
+
+
+@app.route("/api/mail/move", methods=["POST"])
+def api_mail_move():
+    body = _json_body()
+    folder = (body.get("folder") or "").strip()
+    uid = (body.get("uid") or "").strip()
+    target = (body.get("target") or "").strip()
+    if not validate_folder(folder) or not validate_folder(target) or not _UID_RE.match(uid):
+        return jsonify({"ok": False, "error": "Invalid folder, target, or uid"}), 400
+    if folder == target:
+        return jsonify({"ok": False, "error": "Source and target are the same folder"}), 400
+
+    imap, err = _mail_imap()
+    if err:
+        return err
+    try:
+        result = move_message_uid(imap, folder, uid, target)
+    except Exception as exc:
+        log.error("Move failed for %s uid %s → %s: %s", folder, uid, target, exc)
+        return jsonify({"ok": False, "error": str(exc)}), 502
+    finally:
+        imap.logout()
+
+    if not result["ok"]:
+        status = 404 if result.get("error") == "Message not found" else 502
+        return jsonify({"ok": False, "error": result.get("error", "Move failed")}), status
+
+    if "INBOX" in (folder.upper(), target.upper()):
+        _invalidate_inbox_count()
+
+    # Dropping onto a MailMatrixCategories/* label also creates a sender rule;
+    # any other target (Trash, Archive, ...) is just a move.
+    rule_created = False
+    from_addr = result.get("from_addr", "")
+    if validate_label(target) and validate_email_address(from_addr):
+        data = _load_rules()
+        add_sender_to_label_rule(data, from_addr, target)
+        _save_rules(data)
+        rule_created = True
+        log.info("Rule created via drag-drop: %s → %s", from_addr, target)
+
+    return jsonify({"ok": True, "rule_created": rule_created, "from_addr": from_addr})
+
+
+def _append_to_sent(msg: EmailMessage) -> bool:
+    """Save a copy of a just-sent message to the Sent folder. Fastmail (unlike
+    Gmail) doesn't auto-save SMTP-sent mail. Best-effort — the mail already
+    went out, so failures only mean no Sent copy."""
+    imap, err = _mail_imap()
+    if err:
+        return False
+    try:
+        sent = next((f["name"] for f in list_folders(imap) if f["special"] == "sent"), None)
+        if not sent:
+            log.warning("No Sent folder found — sent copy not saved")
+            return False
+        status, _ = _imap_call(lambda: imap.append(f'"{sent}"', "\\Seen", None, msg.as_bytes()))
+        return status == "OK"
+    except Exception as exc:
+        log.warning("Could not save sent copy: %s", exc)
+        return False
+    finally:
+        imap.logout()
+
+
+@app.route("/api/mail/send", methods=["POST"])
+def api_mail_send():
+    body = _json_body()
+
+    def _addr_list(field: str) -> list:
+        value = body.get(field) or []
+        if isinstance(value, str):
+            value = [v.strip() for v in re.split(r"[,;]", value) if v.strip()]
+        return [v for v in value if v]
+
+    to = _addr_list("to")
+    cc = _addr_list("cc")
+    bcc = _addr_list("bcc")
+    subject = (body.get("subject") or "").strip()
+    text = body.get("body") or ""
+    in_reply_to = (body.get("in_reply_to") or "").strip()
+    references = (body.get("references") or "").strip()
+
+    if not to:
+        return jsonify({"ok": False, "error": "Missing recipient"}), 400
+    for addr in to + cc + bcc:
+        if not validate_email_address(addr):
+            return jsonify({"ok": False, "error": f"Invalid recipient: {addr}"}), 400
+    for value in (subject, in_reply_to, references):
+        if "\r" in value or "\n" in value:  # header injection
+            return jsonify({"ok": False, "error": "Invalid header value"}), 400
+
+    username = get_credential("IMAP_USERNAME")
+    password = get_credential("IMAP_PASSWORD")
+    if not (username and password):
+        return jsonify({"ok": False, "error": "Credentials not configured"}), 400
+    smtp_server = get_credential("SMTP_SERVER") or "smtp.fastmail.com"
+    try:
+        smtp_port = int(get_credential("SMTP_PORT") or "465")
+    except ValueError:
+        smtp_port = 465
+
+    msg = EmailMessage()
+    msg["From"] = username
+    msg["To"] = ", ".join(to)
+    if cc:
+        msg["Cc"] = ", ".join(cc)
+    if bcc:
+        # smtplib.send_message uses Bcc for the envelope but strips the header
+        # from the transmitted copy; the Sent copy keeps it (sender's record).
+        msg["Bcc"] = ", ".join(bcc)
+    msg["Subject"] = subject
+    msg["Date"] = formatdate(localtime=True)
+    msg["Message-ID"] = make_msgid()
+    if in_reply_to:
+        msg["In-Reply-To"] = in_reply_to
+    if references:
+        msg["References"] = references
+    msg.set_content(text)
+
+    try:
+        send_smtp(smtp_server, smtp_port, username, password, msg)
+    except Exception as exc:
+        log.error("SMTP send failed: %s", exc)
+        return jsonify({"ok": False, "error": f"Send failed: {exc}"}), 502
+    log.info("Mail sent to %s (%d recipient(s))", ", ".join(to), len(to + cc + bcc))
+
+    return jsonify({"ok": True, "sent_copy_saved": _append_to_sent(msg)})
+
+
+@app.route("/api/mail/folders/create", methods=["POST"])
+def api_mail_folders_create():
+    body = _json_body()
+    name = (body.get("name") or "").strip()
+    if not validate_new_folder_name(name):
+        return jsonify({"ok": False, "error": "Invalid folder name"}), 400
+
+    imap, err = _mail_imap()
+    if err:
+        return err
+    try:
+        status, data = _imap_call(lambda: imap.create(f'"{name}"'))
+    except Exception as exc:
+        log.error("Folder create failed for %s: %s", name, exc)
+        return jsonify({"ok": False, "error": str(exc)}), 502
+    finally:
+        imap.logout()
+
+    if status != "OK":
+        detail = data[0].decode(errors="replace") if data and data[0] else "CREATE failed"
+        return jsonify({"ok": False, "error": detail}), 502
+    _invalidate_folders_cache()
+    log.info("Folder created: %s", name)
+    return jsonify({"ok": True})
 
 
 if __name__ == "__main__":
