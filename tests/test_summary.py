@@ -680,3 +680,97 @@ def test_main_continues_after_sort_failure(mock_imap, tmp_path, monkeypatch):
         main()  # must not raise
 
     assert "path" in summary_written, "Report file was not written after sort failure"
+
+
+def test_accept_filing_failed_copy_never_deletes(mock_imap, tmp_path):
+    rules_file = tmp_path / "emailRules.json"
+    rules_file.write_text(json.dumps({"labels": []}))
+
+    mock_imap.search.return_value = ("OK", [b"1 2"])
+    mock_imap.copy.return_value = ("NO", [b"[TRYCREATE] no such mailbox"])
+
+    with patch("emailSummary.connect_to_imap", return_value=mock_imap):
+        result = accept_filing(
+            body={"from_addr": "new@work.com", "label": "MailMatrixCategories/Work"},
+            imap_server="imap.gmail.com", imap_port=993,
+            username="user@gmail.com", password="pass",
+            rules_path=str(rules_file),
+        )
+
+    assert result["ok"] is False
+    assert result["moved"] == 0
+    assert result["copy_failed"] == 2
+    mock_imap.store.assert_not_called()
+    mock_imap.expunge.assert_not_called()
+    # Rules must not be updated when nothing moved
+    assert json.loads(rules_file.read_text()) == {"labels": []}
+
+
+def test_accept_filing_partial_copy_failure_moves_the_rest(mock_imap, tmp_path):
+    rules_file = tmp_path / "emailRules.json"
+    rules_file.write_text(json.dumps({"labels": []}))
+
+    mock_imap.search.return_value = ("OK", [b"1 2"])
+    mock_imap.copy.side_effect = [("OK", None), ("NO", [b"quota exceeded"])]
+
+    with patch("emailSummary.connect_to_imap", return_value=mock_imap):
+        result = accept_filing(
+            body={"from_addr": "new@work.com", "label": "MailMatrixCategories/Work"},
+            imap_server="imap.gmail.com", imap_port=993,
+            username="user@gmail.com", password="pass",
+            rules_path=str(rules_file),
+        )
+
+    assert result["ok"] is True
+    assert result["moved"] == 1
+    assert result["copy_failed"] == 1
+    mock_imap.store.assert_called_once()
+    mock_imap.expunge.assert_called_once()
+
+
+def test_report_js_inserts_accept_confirmation_without_innerhtml():
+    """The accepted-label confirmation must be built with textContent, not
+    innerHTML — a label containing markup would otherwise execute (XSS)."""
+    html = build_html_report(date(2026, 6, 28), [], {}, {"action_required": [], "filing_suggestions": []})
+    assert "sug.innerHTML" not in html
+    assert "textContent" in html
+
+
+def test_fetch_folder_emails_uses_one_batched_fetch(mock_imap):
+    from emailSummary import fetch_folder_emails
+    mock_imap.search.return_value = ("OK", [b"1 2"])
+
+    def _batched(id_set, what):
+        data = []
+        for mid in id_set.split(b","):
+            payload = b"From: a@x.com\r\nSubject: Hi\r\nDate: Sun, 28 Jun 2026\r\n"
+            data.append((mid + b" (BODY[HEADER.FIELDS (FROM SUBJECT DATE)] {%d}" % len(payload), payload))
+            data.append(b")")
+        return ("OK", data)
+
+    mock_imap.fetch.side_effect = _batched
+
+    emails = fetch_folder_emails(mock_imap, "MailMatrixCategories/Work", "28-Jun-2026")
+
+    assert len(emails) == 2
+    assert emails[0]["from_addr"] == "a@x.com"
+    mock_imap.fetch.assert_called_once()
+    assert mock_imap.fetch.call_args[0][0] == b"1,2"
+
+
+def test_fetch_inbox_with_body_combined_fetch_builds_snippet(mock_imap):
+    from emailSummary import fetch_inbox_with_body
+    mock_imap.search.return_value = ("OK", [b"1"])
+    headers = b"From: a@x.com\r\nSubject: Hi\r\nDate: Sun, 28 Jun 2026\r\n"
+    mock_imap.fetch.return_value = ("OK", [
+        (b"1 (BODY[HEADER.FIELDS (FROM SUBJECT DATE CONTENT-TYPE)] {%d}" % len(headers), headers),
+        (b" BODY[TEXT]<0> {12}", b"Plain body."),
+        b")",
+    ])
+
+    emails = fetch_inbox_with_body(mock_imap, "28-Jun-2026")
+
+    assert len(emails) == 1
+    assert emails[0]["body_snippet"] == "Plain body."
+    # Headers and body arrive in a single FETCH round trip
+    mock_imap.fetch.assert_called_once()

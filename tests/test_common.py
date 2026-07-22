@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+import commonFunctions
 from commonFunctions import (
     build_rule_groups,
     collapse_domain_rule,
@@ -447,7 +448,7 @@ def test_move_imap_messages_moves_matching_messages(mock_imap):
             "sender@example.com", "MailMatrixCategories/Old", "MailMatrixCategories/New",
             imap_server="imap.example.com", imap_port=993, username="user", password="pw",
         )
-    assert result == {"ok": True, "moved": 2}
+    assert result == {"ok": True, "moved": 2, "copy_failed": 0}
     mock_imap.expunge.assert_called_once()
     mock_imap.logout.assert_called_once()
 
@@ -479,7 +480,7 @@ def test_move_imap_messages_no_messages_found(mock_imap):
             "sender@example.com", "MailMatrixCategories/Old", "MailMatrixCategories/New",
             imap_server="imap.example.com", imap_port=993, username="user", password="pw",
         )
-    assert result == {"ok": True, "moved": 0}
+    assert result == {"ok": True, "moved": 0, "copy_failed": 0}
     mock_imap.expunge.assert_not_called()
 
 
@@ -741,3 +742,146 @@ def test_extract_body_snippet_keeps_text_between_style_blocks():
         b"<script>unclosed script tail that never closes"
     )
     assert extract_body_snippet(header_bytes, body_bytes) == "Real content here"
+
+
+# ── fetch_many ─────────────────────────────────────────────────────────────────
+
+def test_fetch_many_empty_id_list(mock_imap):
+    assert commonFunctions.fetch_many(mock_imap, [], "(BODY[HEADER.FIELDS (FROM)])") == {}
+    mock_imap.fetch.assert_not_called()
+
+
+def test_fetch_many_parses_multiple_messages(mock_imap):
+    mock_imap.fetch.return_value = ("OK", [
+        (b"1 (BODY[HEADER.FIELDS (FROM)] {20}", b"From: a@x.com\r\n"),
+        b")",
+        (b"2 (BODY[HEADER.FIELDS (FROM)] {20}", b"From: b@y.com\r\n"),
+        b")",
+    ])
+    result = commonFunctions.fetch_many(mock_imap, [b"1", b"2"], "(BODY[HEADER.FIELDS (FROM)])")
+    assert result[b"1"]["header"] == b"From: a@x.com\r\n"
+    assert result[b"2"]["header"] == b"From: b@y.com\r\n"
+    # One batched FETCH with a comma-joined ID set, not one call per message
+    mock_imap.fetch.assert_called_once()
+    assert mock_imap.fetch.call_args[0][0] == b"1,2"
+
+
+def test_fetch_many_combined_header_and_text_sections(mock_imap):
+    # Servers echo the partial-fetch request <0.2000> back as just <0>; the
+    # text continuation tuple carries no sequence number.
+    mock_imap.fetch.return_value = ("OK", [
+        (b"7 (BODY[HEADER.FIELDS (FROM SUBJECT DATE)] {15}", b"From: a@x.com\r\n"),
+        (b" BODY[TEXT]<0> {5}", b"hello"),
+        b")",
+    ])
+    result = commonFunctions.fetch_many(
+        mock_imap, [b"7"], "(BODY[HEADER.FIELDS (FROM SUBJECT DATE)] BODY[TEXT]<0.2000>)"
+    )
+    assert result[b"7"] == {"header": b"From: a@x.com\r\n", "text": b"hello"}
+
+
+def test_fetch_many_skips_noise_and_missing_messages(mock_imap):
+    mock_imap.fetch.return_value = ("OK", [
+        b"* 3 FLAGS (\\Seen)",  # unsolicited untagged noise
+        (b"1 (BODY[HEADER.FIELDS (FROM)] {15}", b"From: a@x.com\r\n"),
+        b")",
+    ])
+    result = commonFunctions.fetch_many(mock_imap, [b"1", b"2"], "(BODY[HEADER.FIELDS (FROM)])")
+    assert b"1" in result
+    assert b"2" not in result  # server returned nothing for message 2
+
+
+def test_fetch_many_chunks_large_id_lists(mock_imap):
+    mock_imap.fetch.return_value = ("OK", [])
+    ids = [str(i).encode() for i in range(1, 8)]
+    commonFunctions.fetch_many(mock_imap, ids, "(BODY[HEADER.FIELDS (FROM)])", chunk_size=3)
+    id_sets = [c[0][0] for c in mock_imap.fetch.call_args_list]
+    assert id_sets == [b"1,2,3", b"4,5,6", b"7"]
+
+
+def test_fetch_many_skips_failed_chunk(mock_imap):
+    mock_imap.fetch.side_effect = [
+        ("NO", [b"err"]),
+        ("OK", [(b"3 (BODY[HEADER.FIELDS (FROM)] {15}", b"From: c@z.com\r\n"), b")"]),
+    ]
+    result = commonFunctions.fetch_many(
+        mock_imap, [b"1", b"2", b"3"], "(BODY[HEADER.FIELDS (FROM)])", chunk_size=2
+    )
+    assert result == {b"3": {"header": b"From: c@z.com\r\n", "text": None}}
+
+
+# ── move_imap_messages copy-failure safety ─────────────────────────────────────
+
+def test_move_imap_messages_failed_copy_never_deletes(mock_imap):
+    mock_imap.search.return_value = ("OK", [b"1 2"])
+    mock_imap.copy.return_value = ("NO", [b"[TRYCREATE] no such mailbox"])
+    with patch("commonFunctions.connect_to_imap", return_value=mock_imap):
+        result = move_imap_messages(
+            "sender@example.com", "MailMatrixCategories/Old", "MailMatrixCategories/New",
+            imap_server="imap.example.com", imap_port=993, username="user", password="pw",
+        )
+    assert result["ok"] is False
+    assert result["moved"] == 0
+    assert result["copy_failed"] == 2
+    mock_imap.store.assert_not_called()
+    mock_imap.expunge.assert_not_called()
+
+
+def test_move_imap_messages_partial_copy_failure_deletes_only_copied(mock_imap):
+    mock_imap.search.return_value = ("OK", [b"1 2"])
+    mock_imap.copy.side_effect = [("OK", None), ("NO", [b"quota exceeded"])]
+    with patch("commonFunctions.connect_to_imap", return_value=mock_imap):
+        result = move_imap_messages(
+            "sender@example.com", "MailMatrixCategories/Old", "MailMatrixCategories/New",
+            imap_server="imap.example.com", imap_port=993, username="user", password="pw",
+        )
+    assert result == {"ok": True, "moved": 1, "copy_failed": 1}
+    mock_imap.store.assert_called_once()
+    mock_imap.expunge.assert_called_once()
+
+
+# ── load_rules_file corrupt-file handling ──────────────────────────────────────
+
+def test_load_rules_file_missing_returns_empty(tmp_path):
+    assert commonFunctions.load_rules_file(tmp_path / "nope.json") == {"labels": []}
+
+
+def test_load_rules_file_corrupt_backs_up_and_returns_empty(tmp_path):
+    rules = tmp_path / "emailRules.json"
+    rules.write_text("{not valid json", encoding="utf-8")
+    assert commonFunctions.load_rules_file(rules) == {"labels": []}
+    backups = list(tmp_path.glob("emailRules.json.corrupt-*"))
+    assert len(backups) == 1
+    assert backups[0].read_text(encoding="utf-8") == "{not valid json"
+
+
+def test_load_rules_file_non_object_root_treated_as_corrupt(tmp_path):
+    rules = tmp_path / "emailRules.json"
+    rules.write_text("[1, 2, 3]", encoding="utf-8")
+    assert commonFunctions.load_rules_file(rules) == {"labels": []}
+    assert list(tmp_path.glob("emailRules.json.corrupt-*"))
+
+
+# ── credential blob caching ────────────────────────────────────────────────────
+
+def test_get_credential_caches_keychain_blob(monkeypatch):
+    import keyring
+    commonFunctions.set_credential("IMAP_SERVER", "imap.cached.com")
+    calls = {"n": 0}
+    real_get = keyring.get_password
+
+    def _counting_get(service, username):
+        calls["n"] += 1
+        return real_get(service, username)
+
+    monkeypatch.setattr("keyring.get_password", _counting_get)
+    assert commonFunctions.get_credential("IMAP_SERVER") == "imap.cached.com"
+    assert commonFunctions.get_credential("IMAP_SERVER") == "imap.cached.com"
+    assert calls["n"] == 0  # served from the in-process cache
+
+
+def test_set_credential_updates_cache_immediately():
+    commonFunctions.set_credential("IMAP_SERVER", "first.example.com")
+    assert commonFunctions.get_credential("IMAP_SERVER") == "first.example.com"
+    commonFunctions.set_credential("IMAP_SERVER", "second.example.com")
+    assert commonFunctions.get_credential("IMAP_SERVER") == "second.example.com"

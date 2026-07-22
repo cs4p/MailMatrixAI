@@ -6,3 +6,5 @@ emailRules.json
 emailSummary/
 *.log
 .pytest_cache/
+electron/node_modules/
+electron/dist/

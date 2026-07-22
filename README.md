@@ -14,7 +14,7 @@ The web UI (`app.py`) wraps all three scripts and adds a rules browser with sear
 
 ## Setup
 
-**Prerequisites:** Python 3.9+, an IMAP-enabled mail account, and an [Anthropic API key](https://console.anthropic.com/settings/keys).
+**Prerequisites:** Python 3.10+, an IMAP-enabled mail account, and an [Anthropic API key](https://console.anthropic.com/settings/keys).
 
 ```bash
 git clone <repo>
@@ -23,12 +23,14 @@ cd MailMatrixAI
 python -m venv .venv
 source .venv/bin/activate
 pip install -e .
-
-cp .env.example .env
-# Edit .env and fill in your credentials
 ```
 
-### `.env` configuration
+### Credentials
+
+Credentials are stored in the macOS Keychain (one consolidated item, service
+`MailMatrixAI`) and managed from the web UI's **Config** page — no config file
+needed. Alternatively, create a `.env` (see `.env.example`); its values are
+migrated into the Keychain the first time `app.py` starts:
 
 ```
 IMAP_SERVER=imap.your-provider.com
@@ -50,12 +52,27 @@ Common server addresses:
 
 ## Usage
 
-### Web UI (recommended)
+### Desktop app (Electron)
+
+```bash
+cd electron
+npm install
+npm start
+```
+
+Opens the web UI in its own window, running the Flask backend on a free local
+port and shutting it down when the window closes. See `electron/README.md`.
+
+### Web UI
 
 ```bash
 python app.py
 # Open http://localhost:5000
 ```
+
+The server is configurable via environment variables: `MAILMATRIX_HOST`
+(default `127.0.0.1`), `MAILMATRIX_PORT` (default `5000`), and
+`MAILMATRIX_DEBUG=1` to enable Flask debug mode (off by default).
 
 | Page | Path | What it does |
 |---|---|---|
@@ -103,7 +120,7 @@ pip install -e ".[dev]"
 python -m pytest
 ```
 
-106 tests, 85% coverage. IMAP and Anthropic API are fully stubbed — no network calls during tests.
+256 tests. IMAP, the Anthropic API, and the macOS Keychain are fully stubbed — no network or Keychain access during tests.
 
 ## Project structure
 
@@ -113,6 +130,8 @@ commonFunctions.py     Shared IMAP utilities, retry logic, header parsing
 emailRulesInit.py      Crawl labels → emailRules.json
 sortEmail.py           Sort INBOX using emailRules.json
 emailSummary.py        Generate daily HTML report with Claude analysis
+cleanupRules.py        Interactive rules optimizer (also backs the /cleanup page)
+electron/              Electron desktop wrapper (npm start)
 templates/             Jinja2 page templates
 static/                CSS and JS
 tests/                 pytest suite

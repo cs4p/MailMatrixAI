@@ -11,7 +11,7 @@
 ## Full email client
 - Add support to read and write emails.
 
-## Convert this to an electron app instead of trying to build the mac native version
+~~## Convert this to an electron app instead of trying to build the mac native version~~
 
 
 ## resort function

@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import app as flask_app_module
+import commonFunctions
 from app import app as flask_app
 
 
@@ -40,6 +41,9 @@ def client(tmp_path):
     env_file = tmp_path / ".env"
 
     flask_app.config["TESTING"] = True
+    # The inbox count is cached at module level — reset it so tests don't see
+    # each other's cached counts.
+    flask_app_module._invalidate_inbox_count()
 
     with (
         patch.object(flask_app_module, "RULES_PATH", rules_file),
@@ -681,20 +685,37 @@ _RAW_HEADERS = b"From: Alice Work <alice@work.com>\r\nSubject: Q2 Report\r\nDate
 _RAW_BODY = b"Please review the attached."
 
 
+def _combined_fetch(headers_for):
+    """Build a fetch side_effect emulating a real batched multi-message FETCH
+    response: imap.fetch receives a comma-joined ID set and returns, per
+    message, a header tuple (prefixed with its sequence number), a body-text
+    continuation tuple (no sequence number, and the server echoes the partial
+    request <0.2000> back as just <0>), then a bare b")" terminator."""
+    def _fetch(id_set, what):
+        data = []
+        for mid in id_set.split(b","):
+            headers = headers_for(mid)
+            data.append((mid + b" (BODY[HEADER.FIELDS (FROM SUBJECT DATE)] {%d}" % len(headers), headers))
+            if "TEXT" in what:
+                data.append((b" BODY[TEXT]<0> {%d}" % len(_RAW_BODY), _RAW_BODY))
+            data.append(b")")
+        return ("OK", data)
+    return _fetch
+
+
 def _inbox_imap(msg_ids: bytes = b"1"):
-    """Return a mock IMAP whose fetch handles header vs body requests."""
+    """Return a mock IMAP whose fetch answers batched header+body requests."""
     imap = MagicMock()
     imap.select.return_value = ("OK", [b"1"])
     imap.search.return_value = ("OK", [msg_ids])
     imap.logout.return_value = ("BYE", [b""])
-
-    def _fetch(msg_id, what):
-        if "HEADER" in what:
-            return ("OK", [(b"1 (BODY[HEADER.FIELDS (FROM SUBJECT DATE)] {80})", _RAW_HEADERS), b")"])
-        return ("OK", [(b"1 (BODY[TEXT]<0> {26})", _RAW_BODY), b")"])
-
-    imap.fetch.side_effect = _fetch
+    imap.fetch.side_effect = _combined_fetch(lambda mid: _RAW_HEADERS)
     return imap
+
+
+def _per_sender_headers(mid: bytes) -> bytes:
+    n = int(mid)
+    return f"From: Sender {n} <sender{n}@work.com>\r\nSubject: Msg {n}\r\nDate: Fri, 27 Jun 2026\r\n".encode()
 
 
 def _imap_env(monkeypatch):
@@ -861,15 +882,7 @@ def test_api_inbox_analyze_batches_claude_calls_and_remaps_indices(client, monke
     n_senders = 120
     msg_id_list = " ".join(str(i) for i in range(1, n_senders + 1)).encode()
     imap = _inbox_imap(msg_ids=msg_id_list)
-
-    def _fetch(msg_id, what):
-        n = int(msg_id)
-        headers = f"From: Sender {n} <sender{n}@work.com>\r\nSubject: Msg {n}\r\nDate: Fri, 27 Jun 2026\r\n".encode()
-        if "HEADER" in what:
-            return ("OK", [(b"1 (BODY[HEADER.FIELDS (FROM SUBJECT DATE)] {80})", headers), b")"])
-        return ("OK", [(b"1 (BODY[TEXT]<0> {26})", _RAW_BODY), b")"])
-
-    imap.fetch.side_effect = _fetch
+    imap.fetch.side_effect = _combined_fetch(_per_sender_headers)
 
     def _fake_analyze(batch, labels):
         return {
@@ -907,17 +920,20 @@ def test_api_inbox_analyze_cancel_during_fetch(client, monkeypatch):
     _imap_env(monkeypatch)
     _run_inbox_job_sync(monkeypatch)
     job_id = _fixed_job_id(monkeypatch)
+    # Shrink the FETCH chunk size so 10 messages take multiple round trips,
+    # then cancel after the second chunk — later chunks must not be fetched.
+    monkeypatch.setattr(commonFunctions, "FETCH_CHUNK_SIZE", 3)
     msg_id_list = " ".join(str(i) for i in range(1, 11)).encode()
     imap = _inbox_imap(msg_ids=msg_id_list)
 
     fetch_count = {"n": 0}
     real_fetch = imap.fetch.side_effect
 
-    def _counting_fetch(msg_id, what):
+    def _counting_fetch(id_set, what):
         fetch_count["n"] += 1
-        if fetch_count["n"] == 3:
+        if fetch_count["n"] == 2:
             flask_app_module._inbox_jobs[job_id]["cancel_event"].set()
-        return real_fetch(msg_id, what)
+        return real_fetch(id_set, what)
 
     imap.fetch.side_effect = _counting_fetch
 
@@ -930,6 +946,7 @@ def test_api_inbox_analyze_cancel_during_fetch(client, monkeypatch):
 
     data = client.get(f"/api/inbox-analyze/status/{job_id}").get_json()
     assert data["status"] == "cancelled"
+    assert fetch_count["n"] == 2  # chunks 3 and 4 never fetched
     mock_analyze.assert_not_called()
 
 
@@ -940,15 +957,7 @@ def test_api_inbox_analyze_cancel_between_batches(client, monkeypatch):
     n_senders = 120
     msg_id_list = " ".join(str(i) for i in range(1, n_senders + 1)).encode()
     imap = _inbox_imap(msg_ids=msg_id_list)
-
-    def _fetch(msg_id, what):
-        n = int(msg_id)
-        headers = f"From: Sender {n} <sender{n}@work.com>\r\nSubject: Msg {n}\r\nDate: Fri, 27 Jun 2026\r\n".encode()
-        if "HEADER" in what:
-            return ("OK", [(b"1 (BODY[HEADER.FIELDS (FROM SUBJECT DATE)] {80})", headers), b")"])
-        return ("OK", [(b"1 (BODY[TEXT]<0> {26})", _RAW_BODY), b")"])
-
-    imap.fetch.side_effect = _fetch
+    imap.fetch.side_effect = _combined_fetch(_per_sender_headers)
 
     def _cancel_after_first_batch(batch, labels):
         flask_app_module._inbox_jobs[job_id]["cancel_event"].set()
@@ -969,3 +978,113 @@ def test_api_inbox_analyze_cancel_between_batches(client, monkeypatch):
 def test_api_inbox_analyze_unknown_job_returns_404(client):
     resp = client.get("/api/inbox-analyze/status/does-not-exist")
     assert resp.status_code == 404
+
+
+# ── malformed POST bodies must not 500 ────────────────────────────────────────
+
+@pytest.mark.parametrize("raw_body", ["null", "[1, 2]", "{broken", ""])
+def test_post_handlers_tolerate_malformed_json_bodies(client, raw_body):
+    endpoints = [
+        "/accept",
+        "/api/config",
+        "/api/rules/delete",
+        "/api/rules/update-sender",
+        "/api/rules/convert-domain",
+        "/api/cleanup/collapse-domain",
+        "/api/cleanup/resolve-duplicate",
+        "/api/generate-summary",
+    ]
+    # /api/generate-summary treats an empty body as "today" and would spawn
+    # the real emailSummary.py subprocess — stub it out.
+    summary_result = MagicMock(returncode=0, stdout="", stderr="")
+    with patch("app.subprocess.run", return_value=summary_result):
+        for endpoint in endpoints:
+            resp = client.post(endpoint, data=raw_body, content_type="application/json")
+            # Handlers fall through to their own validation, never a 500 —
+            # /api/config treats an empty dict as "nothing to update" (200).
+            assert resp.status_code in (200, 400), f"{endpoint} returned {resp.status_code} for {raw_body!r}"
+
+
+# ── _reindexed guards malformed Claude analysis items ─────────────────────────
+
+def test_reindexed_offsets_and_drops_bad_indices():
+    items = [
+        {"index": 1, "from": "a@x.com"},
+        {"index": 2, "from": "b@x.com"},
+        {"from": "missing-index@x.com"},
+        {"index": "3", "from": "string-index@x.com"},
+        {"index": True, "from": "bool-index@x.com"},
+        {"index": 99, "from": "out-of-range@x.com"},
+        "not-a-dict",
+    ]
+    out = flask_app_module._reindexed(items, batch_start=50, batch_len=50)
+    assert [o["index"] for o in out] == [51, 52]
+
+
+def test_api_inbox_analyze_survives_malformed_analysis_items(client, monkeypatch):
+    _imap_env(monkeypatch)
+    _run_inbox_job_sync(monkeypatch)
+    imap = _inbox_imap(msg_ids=b"1")
+    analysis = {
+        "action_required": [{"from": "no-index@x.com"}],
+        "filing_suggestions": [{"index": 1, "from": "alice@work.com",
+                                "suggested_label": "MailMatrixCategories/Work"}],
+    }
+
+    with (
+        patch("app.connect_to_imap", return_value=imap),
+        patch("app.get_all_labels", return_value=[]),
+        patch("app.analyze_with_claude", return_value=analysis),
+    ):
+        data = _start_and_get_status(client)
+
+    assert data["status"] == "done"  # bad item dropped, job not failed
+    assert data["result"]["action_required"] == []
+    assert data["result"]["filing_suggestions"][0]["index"] == 1
+
+
+# ── inbox-count caching ───────────────────────────────────────────────────────
+
+def test_api_inbox_stats_caches_count_between_polls(client, mock_imap):
+    with (
+        patch.dict(os.environ, {"IMAP_SERVER": "imap.gmail.com", "IMAP_USERNAME": "u", "IMAP_PASSWORD": "p"}),
+        patch("app.connect_to_imap", return_value=mock_imap) as mock_connect,
+    ):
+        first = client.get("/api/inbox-stats").get_json()
+        second = client.get("/api/inbox-stats").get_json()
+
+    assert first["inbox_count"] == second["inbox_count"] == 5
+    mock_connect.assert_called_once()  # second poll served from cache
+
+
+def test_api_inbox_stats_failure_not_cached(client):
+    with patch.dict(os.environ, {"IMAP_SERVER": "", "IMAP_USERNAME": "", "IMAP_PASSWORD": ""}):
+        assert client.get("/api/inbox-stats").get_json()["connected"] is False
+    # Credentials appear later — the earlier failure must not be served back
+    mock_imap = MagicMock()
+    mock_imap.select.return_value = ("OK", [b"7"])
+    mock_imap.logout.return_value = ("BYE", [b""])
+    with (
+        patch.dict(os.environ, {"IMAP_SERVER": "imap.gmail.com", "IMAP_USERNAME": "u", "IMAP_PASSWORD": "p"}),
+        patch("app.connect_to_imap", return_value=mock_imap),
+    ):
+        data = client.get("/api/inbox-stats").get_json()
+    assert data["connected"] is True
+    assert data["inbox_count"] == 7
+
+
+def test_api_sort_invalidates_inbox_count_cache(client, mock_imap):
+    env = {"IMAP_SERVER": "imap.gmail.com", "IMAP_USERNAME": "u", "IMAP_PASSWORD": "p"}
+    with (
+        patch.dict(os.environ, env),
+        patch("app.connect_to_imap", return_value=mock_imap) as mock_connect,
+    ):
+        client.get("/api/inbox-stats")
+
+        sort_result = MagicMock(returncode=0, stdout="ok", stderr="")
+        with patch("app.subprocess.run", return_value=sort_result):
+            client.post("/api/sort")
+
+        client.get("/api/inbox-stats")
+
+    assert mock_connect.call_count == 2  # cache was invalidated by the sort

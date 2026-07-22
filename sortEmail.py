@@ -6,7 +6,14 @@ import sys
 from collections import defaultdict
 from typing import Dict, List, Set, Tuple
 
-from commonFunctions import connect_to_imap, extract_email_address, get_credential, imap_call, setup_logging
+from commonFunctions import (
+    connect_to_imap,
+    extract_email_address,
+    fetch_many,
+    get_credential,
+    imap_call,
+    setup_logging,
+)
 
 log = logging.getLogger(__name__)
 
@@ -62,16 +69,17 @@ def sort_inbox(
 
     moved = skipped = errors = 0
 
+    # One batched FETCH for all headers instead of a round trip per message.
+    fetched = fetch_many(imap, message_ids, '(BODY[HEADER.FIELDS (FROM)])')
+
     for msg_id in message_ids:
         try:
-            status, header_data = imap_call(
-                lambda mid=msg_id: imap.fetch(mid, '(BODY[HEADER.FIELDS (FROM)])')
-            )
-            if status != 'OK':
+            header_bytes = fetched.get(msg_id, {}).get('header')
+            if header_bytes is None:
                 errors += 1
                 continue
 
-            raw = header_data[0][1].decode(errors='replace')
+            raw = header_bytes.decode(errors='replace')
             from_header = ''
             for line in raw.splitlines():
                 if line.lower().startswith('from:'):
@@ -90,8 +98,20 @@ def sort_inbox(
                 log.debug("No rule for %s — leaving in INBOX", addr)
                 continue
 
+            copy_failed = False
             for label in labels:
-                imap_call(lambda lbl=label, mid=msg_id: imap.copy(mid, f'"{lbl}"'))
+                status, _ = imap_call(lambda lbl=label, mid=msg_id: imap.copy(mid, f'"{lbl}"'))
+                if status != 'OK':
+                    # Never delete the original unless every copy succeeded.
+                    # If an earlier label already got a copy, the message is
+                    # duplicated — recoverable, unlike a deleted original.
+                    copy_failed = True
+                    log.error("COPY failed for %s → %s — leaving message %s in INBOX",
+                              addr, label, msg_id)
+                    break
+            if copy_failed:
+                errors += 1
+                continue
 
             imap_call(lambda mid=msg_id: imap.store(mid, '+FLAGS', '\\Deleted'))
             moved += 1
@@ -118,7 +138,12 @@ def main() -> None:
         sys.exit(1)
 
     log.info("Loading rules from %s", rules_path)
-    email_to_labels, domain_to_labels = load_rules(rules_path)
+    try:
+        email_to_labels, domain_to_labels = load_rules(rules_path)
+    except (json.JSONDecodeError, OSError) as exc:
+        # Empty rules would make sorting a silent no-op — fail loudly instead.
+        log.error("Could not load rules from %s: %s", rules_path, exc)
+        sys.exit(1)
     log.info(
         "Rules loaded: %d sender addresses, %d domains",
         len(email_to_labels),
