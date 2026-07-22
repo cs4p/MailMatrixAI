@@ -1,4 +1,5 @@
 import logging
+import os
 import subprocess
 import sys
 import threading
@@ -10,6 +11,7 @@ from pathlib import Path
 from dotenv import load_dotenv, dotenv_values
 from flask import Flask, g, jsonify, redirect, render_template, request, send_file, url_for
 
+import commonFunctions
 from emailSummary import accept_filing, analyze_with_claude, deduplicate_inbox_emails
 from cleanupRules import find_domain_collapsible, find_duplicate_addresses
 from commonFunctions import (
@@ -22,6 +24,7 @@ from commonFunctions import (
     delete_rule,
     extract_body_snippet,
     extract_email_address,
+    fetch_many,
     full_label_name,
     get_all_labels,
     get_credential,
@@ -117,7 +120,46 @@ def _load_rules() -> dict:
     return load_rules_file(RULES_PATH)
 
 
+def _json_body() -> dict:
+    """POST body as a dict — {} for empty, malformed, or non-object bodies
+    (so handlers fall through to their own "missing field" 400s instead of
+    500ing on `None.get`).
+    """
+    body = request.get_json(force=True, silent=True)
+    return body if isinstance(body, dict) else {}
+
+
+# The dashboard polls /api/inbox-stats, and each uncached call is a full IMAP
+# connect+login. Cache the count briefly; sort/accept invalidate it so the
+# dashboard reflects those moves immediately.
+_INBOX_COUNT_TTL = 30.0
+_inbox_count_cache = {"value": None, "at": 0.0}
+_inbox_count_lock = threading.Lock()
+
+
+def _invalidate_inbox_count() -> None:
+    with _inbox_count_lock:
+        _inbox_count_cache["value"] = None
+        _inbox_count_cache["at"] = 0.0
+
+
 def _inbox_count() -> int:
+    with _inbox_count_lock:
+        fresh = (
+            _inbox_count_cache["value"] is not None
+            and time.monotonic() - _inbox_count_cache["at"] < _INBOX_COUNT_TTL
+        )
+        if fresh:
+            return _inbox_count_cache["value"]
+    count = _inbox_count_uncached()
+    if count >= 0:  # don't cache failures — retry on the next poll
+        with _inbox_count_lock:
+            _inbox_count_cache["value"] = count
+            _inbox_count_cache["at"] = time.monotonic()
+    return count
+
+
+def _inbox_count_uncached() -> int:
     try:
         server = get_credential("IMAP_SERVER")
         user = get_credential("IMAP_USERNAME")
@@ -227,6 +269,7 @@ def api_sort():
     elapsed = time.monotonic() - t0
     if result.returncode == 0:
         log.info("Sort completed in %.1fs", elapsed)
+        _invalidate_inbox_count()
         return jsonify({"ok": True, "output": result.stdout[-2000:]})
     log.error("Sort failed in %.1fs (exit=%d): %s", elapsed, result.returncode, result.stderr[-500:])
     return jsonify({"ok": False, "error": result.stderr[-2000:]}), 500
@@ -234,7 +277,7 @@ def api_sort():
 
 @app.route("/api/generate-summary", methods=["POST"])
 def api_generate_summary():
-    body = request.get_json(force=True) or {}
+    body = _json_body()
     target_date = (body.get("date") or "").strip()
     if target_date:
         try:
@@ -262,7 +305,7 @@ def api_generate_summary():
 
 @app.route("/accept", methods=["POST"])
 def accept():
-    body = request.get_json(force=True)
+    body = _json_body()
     # H3: validate label before passing to accept_filing
     label = (body.get("label") or "").strip()
     if not validate_label(label):
@@ -275,12 +318,14 @@ def accept():
         password=get_credential("IMAP_PASSWORD"),
         rules_path=str(RULES_PATH),
     )
+    if result.get("ok"):
+        _invalidate_inbox_count()
     return jsonify(result)
 
 
 @app.route("/api/config", methods=["POST"])
 def api_config():
-    data = request.get_json(force=True)
+    data = _json_body()
     updated = []
     for key, val in data.items():
         if key in _CREDENTIAL_KEYS and val is not None:
@@ -313,7 +358,7 @@ def api_test_connection():
 
 @app.route("/api/rules/delete", methods=["POST"])
 def api_rules_delete():
-    body = request.get_json(force=True)
+    body = _json_body()
     kind = body.get("type")          # "sender" or "domain"
     full_label = body.get("full_label", "").strip()
     if kind not in ("sender", "domain"):
@@ -333,7 +378,7 @@ def api_rules_delete():
 
 @app.route("/api/rules/update-sender", methods=["POST"])
 def api_rules_update_sender():
-    body = request.get_json(force=True)
+    body = _json_body()
     address = body.get("address", "").strip()
     old_full_label = body.get("old_full_label", "").strip()
     new_label_input = body.get("new_label", "").strip()
@@ -362,7 +407,7 @@ def api_rules_update_sender():
 
 @app.route("/api/rules/convert-domain", methods=["POST"])
 def api_rules_convert_domain():
-    body = request.get_json(force=True)
+    body = _json_body()
     domain = body.get("domain", "").strip()
     full_label = body.get("full_label", "").strip()
     purge_other_labels = bool(body.get("purge_other_labels"))
@@ -381,6 +426,21 @@ def api_rules_convert_domain():
 @app.route("/inbox")
 def inbox():
     return render_template("inbox.html")
+
+
+def _reindexed(items: list, batch_start: int, batch_len: int) -> list:
+    """Offset Claude's 1-based per-batch indices to positions in the full
+    deduped sender list, dropping items whose index is missing or malformed
+    (Claude occasionally returns imperfect JSON) instead of failing the job.
+    """
+    out = []
+    for item in items:
+        idx = item.get("index") if isinstance(item, dict) else None
+        if not isinstance(idx, int) or isinstance(idx, bool) or not (1 <= idx <= batch_len):
+            log.warning("Dropping analysis item with bad index: %r", item)
+            continue
+        out.append({**item, "index": idx + batch_start})
+    return out
 
 
 def _analyze_inbox(progress_cb=None, cancel_event=None) -> dict:
@@ -415,32 +475,32 @@ def _analyze_inbox(progress_cb=None, cancel_event=None) -> dict:
         msg_ids = data[0].split() if status == "OK" and data[0] else []
         log.info("INBOX fetch: %d messages", len(msg_ids))
 
-        for i, msg_id in enumerate(msg_ids, 1):
+        # Combined header+body FETCH, one chunk of messages per round trip;
+        # cancellation and progress are checked between chunks. Read the chunk
+        # size through the module so tests can patch it.
+        chunk_size = commonFunctions.FETCH_CHUNK_SIZE
+        for chunk_start in range(0, len(msg_ids), chunk_size):
             if cancel_event.is_set():
                 cancelled = True
                 break
-            progress_cb("fetching", i, len(msg_ids))
+            chunk = msg_ids[chunk_start:chunk_start + chunk_size]
+            progress_cb("fetching", chunk_start, len(msg_ids))
             try:
-                st, raw_data = _imap_call(
-                    lambda mid=msg_id: imap.fetch(mid, "(BODY[HEADER.FIELDS (FROM SUBJECT DATE CONTENT-TYPE)])")
+                fetched = fetch_many(
+                    imap, chunk,
+                    "(BODY[HEADER.FIELDS (FROM SUBJECT DATE CONTENT-TYPE)] BODY[TEXT]<0.2000>)",
                 )
-                if st != "OK" or not raw_data or not raw_data[0]:
+            except Exception as exc:
+                log.error("Error fetching INBOX chunk at %d: %s", chunk_start, exc)
+                continue
+            for msg_id in chunk:
+                entry = fetched.get(msg_id, {})
+                header_bytes = entry.get("header")
+                if header_bytes is None:
                     continue
-                header_bytes = raw_data[0][1]
                 headers = parse_headers(header_bytes.decode(errors="replace"))
-
-                snippet = ""
-                try:
-                    st2, body_data = _imap_call(
-                        lambda mid=msg_id: imap.fetch(mid, "(BODY[TEXT]<0.2000>)")
-                    )
-                    if st2 == "OK" and body_data and body_data[0] and isinstance(body_data[0], tuple):
-                        raw_body = body_data[0][1]
-                        if raw_body:
-                            snippet = extract_body_snippet(header_bytes, raw_body)
-                except Exception:
-                    pass
-
+                body_bytes = entry.get("text") or b""
+                snippet = extract_body_snippet(header_bytes, body_bytes) if body_bytes else ""
                 raw_emails.append({
                     "msg_id": msg_id,
                     "from_display": headers["from"],
@@ -449,8 +509,7 @@ def _analyze_inbox(progress_cb=None, cancel_event=None) -> dict:
                     "date": headers["date"],
                     "body_snippet": snippet,
                 })
-            except Exception as exc:
-                log.error("Error fetching INBOX message %s: %s", msg_id, exc)
+            progress_cb("fetching", min(chunk_start + len(chunk), len(msg_ids)), len(msg_ids))
     finally:
         imap.logout()
 
@@ -476,10 +535,8 @@ def _analyze_inbox(progress_cb=None, cancel_event=None) -> dict:
             error = analysis["_error"]
         # analyze_with_claude numbers emails 1..len(batch) local to this call;
         # offset back to the sender's position in the full deduped list.
-        for item in analysis.get("action_required", []):
-            action_required.append({**item, "index": item["index"] + batch_start})
-        for item in analysis.get("filing_suggestions", []):
-            filing_suggestions.append({**item, "index": item["index"] + batch_start})
+        action_required.extend(_reindexed(analysis.get("action_required", []), batch_start, len(batch)))
+        filing_suggestions.extend(_reindexed(analysis.get("filing_suggestions", []), batch_start, len(batch)))
         progress_cb("analyzing", batch_start + len(batch), total_senders)
 
     if cancelled:
@@ -504,8 +561,22 @@ def _prune_inbox_jobs() -> None:
         del _inbox_jobs[jid]
 
 
+def _get_job(job_id: str):
+    """Look up a job under the lock so a concurrent prune can't race the read.
+
+    Inner job dicts need no locking: the worker thread is the only writer and
+    always *replaces* values (progress dicts, result) atomically. It also sets
+    "result" before "status", so a poller can never see status=done with
+    result=None — keep that write order.
+    """
+    with _inbox_jobs_lock:
+        return _inbox_jobs.get(job_id)
+
+
 def _run_inbox_job(job_id: str) -> None:
-    job = _inbox_jobs[job_id]
+    job = _get_job(job_id)
+    if job is None:  # pruned before the thread got scheduled — nothing to do
+        return
 
     def progress_cb(phase, current, total):
         job["progress"] = {"phase": phase, "current": current, "total": total}
@@ -550,7 +621,7 @@ def api_inbox_analyze_start():
 
 @app.route("/api/inbox-analyze/status/<job_id>")
 def api_inbox_analyze_status(job_id):
-    job = _inbox_jobs.get(job_id)
+    job = _get_job(job_id)
     if not job:
         return jsonify({"error": "Unknown job"}), 404
     return jsonify({
@@ -562,7 +633,7 @@ def api_inbox_analyze_status(job_id):
 
 @app.route("/api/inbox-analyze/cancel/<job_id>", methods=["POST"])
 def api_inbox_analyze_cancel(job_id):
-    job = _inbox_jobs.get(job_id)
+    job = _get_job(job_id)
     if not job:
         return jsonify({"error": "Unknown job"}), 404
     job["cancel_event"].set()
@@ -579,7 +650,7 @@ def cleanup():
 
 @app.route("/api/cleanup/collapse-domain", methods=["POST"])
 def api_cleanup_collapse_domain():
-    body = request.get_json(force=True)
+    body = _json_body()
     domain = body.get("domain", "").strip()
     if not domain:
         return jsonify({"ok": False, "error": "Missing domain"}), 400
@@ -598,7 +669,7 @@ def api_cleanup_collapse_domain():
 
 @app.route("/api/cleanup/resolve-duplicate", methods=["POST"])
 def api_cleanup_resolve_duplicate():
-    body = request.get_json(force=True)
+    body = _json_body()
     address = body.get("address", "").strip()
     keep_label = body.get("keep_label", "").strip()
     if not address or not keep_label:
@@ -614,5 +685,11 @@ def api_cleanup_resolve_duplicate():
 
 
 if __name__ == "__main__":
-    log.info("Starting MailMatrix AI on http://localhost:5000")
-    app.run(debug=True, port=5000)
+    # MAILMATRIX_HOST/PORT let the Electron wrapper (electron/main.js) run the
+    # server on a free port; debug (the Werkzeug reloader + debugger) is
+    # opt-in rather than always-on.
+    host = os.environ.get("MAILMATRIX_HOST", "127.0.0.1")
+    port = int(os.environ.get("MAILMATRIX_PORT", "5000"))
+    debug = os.environ.get("MAILMATRIX_DEBUG", "").lower() in ("1", "true", "yes")
+    log.info("Starting MailMatrix AI on http://%s:%d", host, port)
+    app.run(host=host, port=port, debug=debug)

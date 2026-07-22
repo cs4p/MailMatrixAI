@@ -4,6 +4,8 @@ from unittest.mock import MagicMock
 import keyring.errors
 import pytest
 
+import commonFunctions
+
 
 @pytest.fixture(autouse=True)
 def _fake_keychain(monkeypatch):
@@ -36,6 +38,12 @@ def _fake_keychain(monkeypatch):
     monkeypatch.setattr("keyring.get_password", _get)
     monkeypatch.setattr("keyring.set_password", _set)
     monkeypatch.setattr("keyring.delete_password", _delete)
+
+    # The credential blob is cached at module level — reset it around each
+    # test so one test's fake-keychain contents can't leak into the next.
+    commonFunctions._invalidate_credentials_cache()
+    yield
+    commonFunctions._invalidate_credentials_cache()
 
 
 @pytest.fixture

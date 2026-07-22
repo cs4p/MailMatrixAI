@@ -5,6 +5,7 @@ import logging
 import os
 import random
 import re
+import shutil
 import threading
 import time
 from collections import defaultdict
@@ -12,23 +13,20 @@ from datetime import date, datetime, timedelta
 from email.header import decode_header as _decode_header
 from email.message import Message
 from pathlib import Path
-from typing import Callable, List, Optional, Union
+from typing import Callable, Dict, List, Optional, Union
 
 import keyring
 
 KEYCHAIN_SERVICE = "MailMatrixAI"
 
 # All credentials live in a single Keychain item (one JSON blob) rather than
-# one item per key — must match _CREDENTIALS_ACCOUNT's value below on any
-# other client of this Keychain item (the Swift app's KeychainService.swift
-# uses the same "credentials" account name). Storing everything in one item
-# means macOS prompts for Keychain access once instead of once per key.
+# one item per key — storing everything in one item means macOS prompts for
+# Keychain access once instead of once per key.
 _CREDENTIALS_ACCOUNT = "credentials"
 
 # The 5 keys previously stored as separate Keychain items (account=key) before
 # the single-blob consolidation above — used only to pull old values forward
-# on first run under the new scheme. Must match _CREDENTIAL_KEYS in app.py and
-# KeychainService.credentialKeys in the Swift app.
+# on first run under the new scheme. Must match _CREDENTIAL_KEYS in app.py.
 _LEGACY_CREDENTIAL_KEYS = (
     "IMAP_SERVER", "IMAP_PORT", "IMAP_USERNAME", "IMAP_PASSWORD", "ANTHROPIC_API_KEY",
 )
@@ -58,10 +56,21 @@ def _read_legacy_credential_items() -> dict:
     return legacy
 
 
-def _load_credentials() -> dict:
-    """Load the single JSON credentials blob from Keychain, migrating forward
-    from the old per-key items on first run under the new scheme.
-    """
+# The decoded Keychain blob is cached so repeated get_credential() calls
+# (several per request in app.py) don't each hit the Keychain. The cache
+# stores the blob, not resolved values, so the os.environ fallback for keys
+# missing from the blob still works. Invalidated by set_credential().
+_creds_cache: Optional[dict] = None
+_creds_cache_lock = threading.Lock()
+
+
+def _invalidate_credentials_cache() -> None:
+    global _creds_cache
+    with _creds_cache_lock:
+        _creds_cache = None
+
+
+def _load_credentials_uncached() -> dict:
     raw = keyring.get_password(KEYCHAIN_SERVICE, _CREDENTIALS_ACCOUNT)
     if raw:
         try:
@@ -84,6 +93,18 @@ def _load_credentials() -> dict:
     return legacy
 
 
+def _load_credentials() -> dict:
+    """Load the single JSON credentials blob from Keychain (cached), migrating
+    forward from the old per-key items on first run under the new scheme.
+    """
+    global _creds_cache
+    with _creds_cache_lock:
+        if _creds_cache is None:
+            _creds_cache = _load_credentials_uncached()
+        # Callers get a copy so they can't mutate the cache in place.
+        return dict(_creds_cache)
+
+
 def get_credential(key: str, default: str = "") -> str:
     """Return a credential from the single macOS Keychain blob, falling back to os.environ."""
     creds = _load_credentials()
@@ -94,9 +115,12 @@ def get_credential(key: str, default: str = "") -> str:
 
 def set_credential(key: str, value: str) -> None:
     """Write a credential into the single macOS Keychain blob and keep os.environ in sync."""
+    global _creds_cache
     creds = _load_credentials()
     creds[key] = value
     keyring.set_password(KEYCHAIN_SERVICE, _CREDENTIALS_ACCOUNT, json.dumps(creds))
+    with _creds_cache_lock:
+        _creds_cache = dict(creds)
     os.environ[key] = value
 
 
@@ -325,15 +349,80 @@ def imap_date(d: date) -> str:
     return f"{d.day}-{d.strftime('%b')}-{d.strftime('%Y')}"
 
 
-# ── Rules management (shared by app.py's /rules routes and inboxAnalysis.py) ──
+# First FETCH response tuple of each message starts with its sequence number.
+_FETCH_MSGNUM_RE = re.compile(rb"^(\d+)\s+\(")
+
+# Messages fetched per FETCH command in fetch_many() — module-level so tests
+# (and callers that need finer progress granularity) can override it.
+FETCH_CHUNK_SIZE = 100
+
+
+def fetch_many(imap, msg_ids: List[bytes], parts: str,
+               chunk_size: Optional[int] = None) -> Dict[bytes, dict]:
+    """Fetch `parts` for many message sequence numbers with batched FETCH
+    commands (comma-joined ID sets) instead of one round trip per message.
+
+    Returns {msg_id: {"header": bytes|None, "text": bytes|None}}; messages the
+    server didn't return are simply absent. Sections are classified by HEADER/
+    TEXT keywords in the response prefix — never by echoing the request string,
+    because servers echo a partial request like BODY[TEXT]<0.2000> back as
+    BODY[TEXT]<0>. Only valid while no expunge happens between the caller's
+    SEARCH and this fetch (sequence numbers must stay stable).
+    """
+    chunk_size = chunk_size or FETCH_CHUNK_SIZE
+    results: Dict[bytes, dict] = {}
+    for start in range(0, len(msg_ids), chunk_size):
+        id_set = b",".join(msg_ids[start:start + chunk_size])
+        status, data = imap_call(lambda s=id_set: imap.fetch(s, parts))
+        if status != 'OK' or not data:
+            continue
+        current = None
+        for item in data:
+            if not isinstance(item, tuple) or len(item) < 2:
+                current = None  # bare b')' (or other noise) ends the message
+                continue
+            prefix, payload = item[0], item[1]
+            if not isinstance(prefix, bytes):
+                continue
+            m = _FETCH_MSGNUM_RE.match(prefix)
+            if m:
+                current = m.group(1)
+                results.setdefault(current, {"header": None, "text": None})
+            if current is None:
+                continue
+            if b"HEADER" in prefix:
+                results[current]["header"] = payload or b""
+            elif b"TEXT" in prefix:
+                results[current]["text"] = payload or b""
+    return results
+
+
+# ── Rules management (used by app.py's /rules and /cleanup routes) ──────────
 
 def load_rules_file(path: Union[str, Path]) -> dict:
-    """Read emailRules.json, defaulting to an empty rule set if it doesn't exist yet."""
+    """Read emailRules.json, defaulting to an empty rule set if it doesn't exist yet.
+
+    A corrupt file is backed up (so a later save through the mutation routes
+    can't silently overwrite the only copy) and treated as empty.
+    """
     path = Path(path)
-    if path.exists():
+    if not path.exists():
+        return {"labels": []}
+    try:
         with open(path, encoding="utf-8") as f:
-            return json.load(f)
-    return {"labels": []}
+            data = json.load(f)
+        if not isinstance(data, dict):
+            raise ValueError("rules root is not a JSON object")
+        return data
+    except (json.JSONDecodeError, ValueError) as exc:
+        backup = path.with_name(f"{path.name}.corrupt-{datetime.now():%Y%m%d-%H%M%S}")
+        try:
+            shutil.copy2(path, backup)
+            log.warning("Corrupt rules file %s (%s) — backed up to %s, using empty rules",
+                        path, exc, backup.name)
+        except OSError:
+            log.warning("Corrupt rules file %s (%s) — backup failed, using empty rules", path, exc)
+        return {"labels": []}
 
 
 def save_rules_file(path: Union[str, Path], data: dict) -> None:
@@ -633,15 +722,28 @@ def move_imap_messages(address: str, from_full_label: str, to_full_label: str,
         status, search_data = imap_call(lambda: imap.search(None, f'FROM "{address}"'))
         msg_ids = search_data[0].split() if status == "OK" and search_data[0] else []
 
+        moved = copy_failed = 0
         for mid in msg_ids:
-            imap_call(lambda m=mid: imap.copy(m, f'"{to_full_label}"'))
+            # Never delete the original unless the copy actually succeeded —
+            # a NO response (missing folder, quota, ...) would otherwise
+            # destroy the message.
+            st, _ = imap_call(lambda m=mid: imap.copy(m, f'"{to_full_label}"'))
+            if st != "OK":
+                copy_failed += 1
+                log.error("COPY to %s failed for message %s — leaving it in %s",
+                          to_full_label, mid, from_full_label)
+                continue
             imap_call(lambda m=mid: imap.store(m, '+FLAGS', r'\Deleted'))
+            moved += 1
 
-        if msg_ids:
+        if moved:
             imap_call(lambda: imap.expunge())
 
-        log.info("Moved %d message(s) for <%s>", len(msg_ids), address)
-        return {"ok": True, "moved": len(msg_ids)}
+        log.info("Moved %d message(s) for <%s> (%d copy failure(s))", moved, address, copy_failed)
+        if copy_failed and not moved:
+            return {"ok": False, "error": f"COPY to {to_full_label} failed",
+                    "moved": 0, "copy_failed": copy_failed}
+        return {"ok": True, "moved": moved, "copy_failed": copy_failed}
     except Exception as exc:
         log.error("IMAP move failed for <%s>: %s", address, exc)
         return {"ok": False, "error": str(exc), "moved": 0}

@@ -17,7 +17,9 @@ import anthropic
 from commonFunctions import (
     connect_to_imap,
     decode_header_value,
+    extract_body_snippet,
     extract_email_address,
+    fetch_many,
     get_all_labels,
     get_credential,
     imap_call,
@@ -148,7 +150,10 @@ async function handleAccept(btn) {
     const data = await res.json();
     if (data.ok) {
       const shortLabel = label.replace('MailMatrixCategories/', '');
-      sug.innerHTML = '<span class="accepted-msg">✓ Moved to ' + shortLabel + ' · emailRules.json updated</span>';
+      const span = document.createElement('span');
+      span.className = 'accepted-msg';
+      span.textContent = '✓ Moved to ' + shortLabel + ' · emailRules.json updated';
+      sug.replaceChildren(span);
     } else {
       btn.disabled = false;
       btn.textContent = 'Accept';
@@ -206,52 +211,66 @@ def fetch_folder_emails(imap: imaplib.IMAP4_SSL, folder: str, date_filter: str) 
         return []
 
     log.info("'%s': %d messages on %s", folder, len(message_ids), date_filter)
+
+    # One batched FETCH for all headers instead of a round trip per message.
+    fetched = fetch_many(imap, message_ids, '(BODY[HEADER.FIELDS (FROM SUBJECT DATE)])')
+
     emails = []
-
     for msg_id in message_ids:
-        try:
-            status, data = imap_call(
-                lambda mid=msg_id: imap.fetch(mid, '(BODY[HEADER.FIELDS (FROM SUBJECT DATE)])')
-            )
-            if status != 'OK' or not data or not data[0]:
-                continue
-
-            raw = data[0][1].decode(errors='replace')
-            headers = parse_headers(raw)
-
-            emails.append({
-                'msg_id': msg_id,
-                'from_display': headers['from'],
-                'from_addr': extract_email_address(headers['from']),
-                'subject': headers['subject'] or '(no subject)',
-                'date': headers['date'],
-            })
-        except Exception as exc:
-            log.error("Error fetching message %s in '%s': %s", msg_id, folder, exc)
+        header_bytes = fetched.get(msg_id, {}).get('header')
+        if header_bytes is None:
+            continue
+        headers = parse_headers(header_bytes.decode(errors='replace'))
+        emails.append({
+            'msg_id': msg_id,
+            'from_display': headers['from'],
+            'from_addr': extract_email_address(headers['from']),
+            'subject': headers['subject'] or '(no subject)',
+            'date': headers['date'],
+        })
 
     return emails
 
 
 def fetch_inbox_with_body(imap: imaplib.IMAP4_SSL, date_filter: str) -> List[dict]:
-    emails = fetch_folder_emails(imap, 'INBOX', date_filter)
+    status, _ = imap_call(lambda: imap.select('"INBOX"', readonly=True))
+    if status != 'OK':
+        log.warning("Could not select INBOX")
+        return []
 
-    for em in emails:
-        try:
-            status, data = imap_call(
-                lambda mid=em['msg_id']: imap.fetch(mid, '(BODY[TEXT]<0.2000>)')
-            )
-            snippet = ''
-            if status == 'OK' and data and data[0] and isinstance(data[0], tuple):
-                raw_body = data[0][1]
-                if raw_body:
-                    text = raw_body.decode(errors='replace')
-                    text = re.sub(r'<[^>]+>', ' ', text)
-                    text = re.sub(r'\s+', ' ', text).strip()
-                    snippet = text[:400]
-            em['body_snippet'] = snippet
-        except Exception as exc:
-            log.debug("Could not fetch body for %s: %s", em['msg_id'], exc)
-            em['body_snippet'] = ''
+    status, messages = imap_call(lambda: imap.search(None, f'ON {date_filter}'))
+    if status != 'OK':
+        return []
+
+    message_ids = messages[0].split()
+    if not message_ids:
+        return []
+
+    log.info("'INBOX': %d messages on %s", len(message_ids), date_filter)
+
+    # A single combined FETCH per chunk gets headers and the body snippet
+    # together instead of two round trips per message.
+    fetched = fetch_many(
+        imap, message_ids,
+        '(BODY[HEADER.FIELDS (FROM SUBJECT DATE CONTENT-TYPE)] BODY[TEXT]<0.2000>)',
+    )
+
+    emails = []
+    for msg_id in message_ids:
+        entry = fetched.get(msg_id, {})
+        header_bytes = entry.get('header')
+        if header_bytes is None:
+            continue
+        headers = parse_headers(header_bytes.decode(errors='replace'))
+        body_bytes = entry.get('text') or b''
+        emails.append({
+            'msg_id': msg_id,
+            'from_display': headers['from'],
+            'from_addr': extract_email_address(headers['from']),
+            'subject': headers['subject'] or '(no subject)',
+            'date': headers['date'],
+            'body_snippet': extract_body_snippet(header_bytes, body_bytes) if body_bytes else '',
+        })
 
     return emails
 
@@ -568,16 +587,27 @@ def accept_filing(
             status, messages = imap_call(lambda: imap.search(None, f'FROM "{from_addr}"'))
             msg_ids = messages[0].split() if status == 'OK' else []
 
+            moved = copy_failed = 0
             for mid in msg_ids:
-                imap_call(lambda m=mid: imap.copy(m, f'"{label}"'))
+                # Never delete the original unless the copy actually succeeded.
+                st, _ = imap_call(lambda m=mid: imap.copy(m, f'"{label}"'))
+                if st != 'OK':
+                    copy_failed += 1
+                    log.error("COPY to %s failed for message %s — leaving it in INBOX", label, mid)
+                    continue
                 imap_call(lambda m=mid: imap.store(m, '+FLAGS', '\\Deleted'))
+                moved += 1
 
-            if msg_ids:
+            if moved:
                 imap_call(lambda: imap.expunge())
 
-            log.info("Moved %d message(s) from %s to %s", len(msg_ids), from_addr, label)
+            log.info("Moved %d message(s) from %s to %s (%d copy failure(s))",
+                     moved, from_addr, label, copy_failed)
         finally:
             imap.logout()
+        if copy_failed and not moved:
+            return {'ok': False, 'error': f'Could not copy messages to {label}',
+                    'moved': 0, 'copy_failed': copy_failed}
     except Exception as exc:
         log.error("IMAP error during accept: %s", exc)
         return {'ok': False, 'error': str(exc)}
@@ -610,7 +640,7 @@ def accept_filing(
         log.error("Failed to update %s: %s", rules_path, exc)
         return {'ok': False, 'error': f'Emails moved but rules update failed: {exc}'}
 
-    return {'ok': True, 'moved': len(msg_ids)}
+    return {'ok': True, 'moved': moved, 'copy_failed': copy_failed}
 
 
 # ── Report generation pipeline ────────────────────────────────────────────────

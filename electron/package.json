@@ -1,0 +1,31 @@
+{
+  "name": "mailmatrix-electron",
+  "productName": "MailMatrix AI",
+  "version": "0.2.0",
+  "description": "Desktop wrapper for the MailMatrix AI Flask app",
+  "private": true,
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --mac"
+  },
+  "devDependencies": {
+    "electron": "^38.0.0",
+    "electron-builder": "^26.0.0"
+  },
+  "build": {
+    "appId": "net.cs4p.mailmatrixai",
+    "productName": "MailMatrix AI",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "error.html"
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": "dir"
+    }
+  }
+}

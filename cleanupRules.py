@@ -73,24 +73,29 @@ def find_domain_collapsible(rules: dict) -> List[dict]:
     """
     For each domain rule, find all individual sender addresses across every
     label whose domain matches — these are redundant and can be removed.
+
+    Single pass over the rules (domain→addresses map) instead of rescanning
+    every address for every domain rule; this runs on each Dashboard load.
     """
     domain_to_rule_labels: Dict[str, List[str]] = defaultdict(list)
+    domain_to_addresses: Dict[str, List[dict]] = defaultdict(list)
     for entry in rules.get("labels", []):
         for domain in entry.get("emailDomains", []):
             domain_to_rule_labels[domain].append(entry["labelName"])
+        for addr in entry.get("emailAddresses", []):
+            if "@" in addr:
+                addr_domain = addr.lower().rsplit("@", 1)[1]
+                domain_to_addresses[addr_domain].append(
+                    {"address": addr, "label": entry["labelName"]}
+                )
 
     results = []
     for domain in sorted(domain_to_rule_labels):
-        rule_labels = domain_to_rule_labels[domain]
-        collapsible = []
-        for entry in rules.get("labels", []):
-            for addr in entry.get("emailAddresses", []):
-                if addr.lower().endswith(f"@{domain}"):
-                    collapsible.append({"address": addr, "label": entry["labelName"]})
+        collapsible = domain_to_addresses.get(domain.lower(), [])
         if collapsible:
             results.append({
                 "domain": domain,
-                "rule_labels": rule_labels,
+                "rule_labels": domain_to_rule_labels[domain],
                 "collapsible": sorted(collapsible, key=lambda x: x["address"]),
             })
     return results
@@ -203,7 +208,12 @@ def main() -> None:
         print(f"Error: {rules_path} not found. Run emailRulesInit.py first.")
         sys.exit(1)
 
-    rules = load_rules(rules_path)
+    try:
+        rules = load_rules(rules_path)
+    except (json.JSONDecodeError, OSError) as exc:
+        # Empty rules would misleadingly report "your rules look clean".
+        print(f"Error: could not read {rules_path}: {exc}")
+        sys.exit(1)
     collapses = find_domain_collapsible(rules)
     duplicates = find_duplicate_addresses(rules)
 
