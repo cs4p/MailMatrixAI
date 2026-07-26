@@ -131,6 +131,11 @@
       if (!data.ok) throw new Error(data.error || 'Failed to load folders');
       FOLDERS = data.folders;
       renderTree();
+      // Open the inbox by default so the screen isn't empty on load.
+      if (!currentFolder) {
+        const inbox = FOLDERS.find(f => f.name.toUpperCase() === 'INBOX' && f.selectable);
+        if (inbox) selectFolder(inbox.name);
+      }
     } catch (err) {
       tree.innerHTML = '';
       const msg = document.createElement('div');
