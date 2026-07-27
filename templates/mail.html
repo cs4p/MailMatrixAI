@@ -100,6 +100,7 @@
 
   // ── State ──────────────────────────────────────────────────────────────────
   let FOLDERS = [];
+  let UNREAD = {};            // {folder name: unseen count}
   let currentFolder = null;   // raw wire name
   let currentPage = 0;
   let totalMessages = 0;
@@ -131,6 +132,12 @@
       if (!data.ok) throw new Error(data.error || 'Failed to load folders');
       FOLDERS = data.folders;
       renderTree();
+      // Open the inbox by default so the screen isn't empty on load.
+      if (!currentFolder) {
+        const inbox = FOLDERS.find(f => f.name.toUpperCase() === 'INBOX' && f.selectable);
+        if (inbox) selectFolder(inbox.name);
+      }
+      loadUnread();
     } catch (err) {
       tree.innerHTML = '';
       const msg = document.createElement('div');
@@ -138,6 +145,14 @@
       msg.textContent = 'Could not load folders: ' + err.message;
       tree.appendChild(msg);
     }
+  }
+
+  async function loadUnread() {
+    try {
+      const res = await fetch('/api/mail/unread');
+      const data = await res.json();
+      if (data.ok) { UNREAD = data.unread || {}; renderTree(); }
+    } catch (_) { /* non-fatal: badges just won't show */ }
   }
 
   function orderedFolders() {
@@ -178,6 +193,15 @@
 
       item.appendChild(icon);
       item.appendChild(label);
+
+      const unread = UNREAD[f.name] || 0;
+      if (unread > 0) {
+        item.classList.add('folder-unread');
+        const badge = document.createElement('span');
+        badge.className = 'folder-badge';
+        badge.textContent = unread > 999 ? '999+' : unread;
+        item.appendChild(badge);
+      }
 
       if (f.selectable) {
         item.addEventListener('click', () => selectFolder(f.name));
@@ -297,12 +321,18 @@
   async function openMessage(uid, folder, row) {
     document.querySelectorAll('.mail-row').forEach(el => el.classList.remove('active'));
     if (row) row.classList.add('active');
+    const wasUnseen = !!(row && row.classList.contains('unseen'));
     try {
       const res = await fetch('/api/mail/message?folder=' + encodeURIComponent(folder)
         + '&uid=' + encodeURIComponent(uid));
       const data = await res.json();
       if (!data.ok) throw new Error(data.error || 'Failed to load message');
       if (row) row.classList.remove('unseen');
+      // Opening marks the message read server-side; reflect that in the badge.
+      if (wasUnseen && UNREAD[folder]) {
+        UNREAD[folder] = Math.max(0, UNREAD[folder] - 1);
+        renderTree();
+      }
       currentMessage = { uid, folder, ...data };
       renderMessage();
     } catch (err) {
@@ -427,6 +457,7 @@
       showToast(data.rule_created
         ? 'Moved to ' + label + ' — rule created for ' + data.from_addr
         : 'Moved to ' + label);
+      loadUnread();  // source/target unread counts may have changed
     } catch (err) {
       showToast('Error: ' + err.message, 'error');
     }

@@ -94,6 +94,7 @@ Four pages served at `/`, `/summaries`, `/rules`, `/config`. API endpoints under
 | `GET /api/test-connection` | Attempts IMAP connect/logout, returns `{ok, message/error}` |
 | `GET /mail` | Mail client page (three-pane: folders / message list / reading pane) |
 | `GET /api/mail/folders` | Full folder tree via `list_folders()` (cached 60s; invalidated on folder create) |
+| `GET /api/mail/unread` | `{name: unseen_count}` via one STATUS (UNSEEN) per selectable folder (uncached) |
 | `GET /api/mail/messages?folder=&page=&page_size=` | UID-paginated message list, newest first (`FLAGS BODY.PEEK[HEADER…]`) |
 | `GET /api/mail/message?folder=&uid=` | Full message via `BODY.PEEK[]` + `extract_message_parts`; marks `\Seen` |
 | `GET /api/mail/attachment?folder=&uid=&part=` | Downloads one attachment (always `application/octet-stream`) |

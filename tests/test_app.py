@@ -1454,3 +1454,19 @@ def test_mail_move_requires_csrf_header(client):
                            json={"folder": "INBOX", "uid": "5", "target": "Trash"},
                            headers={"X-Requested-With": ""})
     assert resp.status_code == 403
+
+
+def test_mail_unread_returns_counts_and_skips_noselect(client):
+    imap = _folders_imap()  # INBOX, Sent, Trash, Parent(\Noselect), MailMatrixCategories/Work
+    imap.status.side_effect = lambda mbox, items: ("OK", [("%s (UNSEEN 3)" % mbox).encode()])
+    with _mail_env_patch(), patch("app.connect_to_imap", return_value=imap):
+        data = client.get("/api/mail/unread").get_json()
+    assert data["ok"] is True
+    assert data["unread"]["INBOX"] == 3
+    assert data["unread"]["Sent"] == 3
+    assert "Parent" not in data["unread"]  # \Noselect folders aren't queried
+
+
+def test_mail_unread_requires_credentials(client):
+    with patch.dict(os.environ, {"IMAP_SERVER": "", "IMAP_USERNAME": "", "IMAP_PASSWORD": ""}):
+        assert client.get("/api/mail/unread").status_code == 400
