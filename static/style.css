@@ -1180,7 +1180,18 @@ a:hover { text-decoration: underline; }
 .folder-item.drop-target { background: rgba(52,199,89,.15); outline: 2px dashed var(--green); outline-offset: -2px; }
 .folder-item.folder-noselect { color: var(--text-secondary); cursor: default; }
 .folder-icon { flex-shrink: 0; font-size: .8rem; }
-.folder-name { overflow: hidden; text-overflow: ellipsis; }
+.folder-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.folder-unread .folder-name { font-weight: 700; }
+.folder-badge {
+  flex-shrink: 0;
+  background: var(--blue);
+  color: #fff;
+  font-size: .6875rem;
+  font-weight: 600;
+  line-height: 1.5;
+  padding: 0 .4rem;
+  border-radius: 980px;
+}
 
 /* Message list */
 .mail-list-header {

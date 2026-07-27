@@ -931,6 +931,31 @@ def uid_search_all(imap, folder: str) -> List[bytes]:
     return data[0].split()
 
 
+_STATUS_UNSEEN_RE = re.compile(rb"UNSEEN (\d+)")
+
+
+def folder_unread_counts(imap, folder_names: List[str]) -> Dict[str, int]:
+    """Return {folder_name: unseen_count} via one STATUS (UNSEEN) per folder.
+
+    Issued without selecting any mailbox; folders that error (\\Noselect,
+    permissions, ...) are skipped. One round trip each, so call sparingly —
+    on folder load and after a move, not on every action.
+    """
+    counts: Dict[str, int] = {}
+    for name in folder_names:
+        try:
+            status, data = imap_call(lambda n=name: imap.status(f'"{n}"', '(UNSEEN)'))
+        except imaplib.IMAP4.error:
+            continue
+        if status != 'OK' or not data or not data[0]:
+            continue
+        raw = data[0] if isinstance(data[0], bytes) else str(data[0]).encode()
+        m = _STATUS_UNSEEN_RE.search(raw)
+        if m:
+            counts[name] = int(m.group(1))
+    return counts
+
+
 _SCRIPT_RE = re.compile(r"<script\b[^>]*>.*?(</script\s*>|\Z)", re.I | re.S)
 
 

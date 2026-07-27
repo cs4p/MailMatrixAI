@@ -1264,3 +1264,29 @@ def test_send_smtp_uses_starttls_for_587():
         smtp.starttls.assert_called_once()
         smtp.login.assert_called_once_with("user@x.com", "pw")
         smtp.send_message.assert_called_once_with(msg)
+
+
+# folder_unread_counts
+
+def test_folder_unread_counts_parses_status():
+    from commonFunctions import folder_unread_counts
+    imap = MagicMock()
+    responses = {'"INBOX"': b'"INBOX" (UNSEEN 5)', '"Sent"': b'"Sent" (UNSEEN 0)'}
+    imap.status.side_effect = lambda mbox, items: ("OK", [responses[mbox]])
+    result = folder_unread_counts(imap, ["INBOX", "Sent"])
+    assert result == {"INBOX": 5, "Sent": 0}
+
+
+def test_folder_unread_counts_skips_folders_that_error():
+    import imaplib
+    from commonFunctions import folder_unread_counts
+    imap = MagicMock()
+
+    def _status(mbox, items):
+        if "Bad" in mbox:
+            raise imaplib.IMAP4.error("STATUS failed")
+        return ("OK", [b'"Good" (UNSEEN 2)'])
+
+    imap.status.side_effect = _status
+    result = folder_unread_counts(imap, ["Good", "Bad"])
+    assert result == {"Good": 2}

@@ -31,6 +31,7 @@ from commonFunctions import (
     extract_email_address,
     extract_message_parts,
     fetch_many,
+    folder_unread_counts,
     full_label_name,
     get_all_labels,
     get_attachment,
@@ -779,6 +780,24 @@ def api_mail_folders():
         _folders_cache["value"] = folders
         _folders_cache["at"] = time.monotonic()
     return jsonify({"ok": True, "folders": folders})
+
+
+@app.route("/api/mail/unread")
+def api_mail_unread():
+    # One STATUS (UNSEEN) per selectable folder — not cached, so counts stay
+    # fresh; the client calls this on load and after a move.
+    imap, err = _mail_imap()
+    if err:
+        return err
+    try:
+        names = [f["name"] for f in list_folders(imap) if f["selectable"]]
+        counts = folder_unread_counts(imap, names)
+    except Exception as exc:
+        log.error("Unread counts failed: %s", exc)
+        return jsonify({"ok": False, "error": str(exc)}), 502
+    finally:
+        imap.logout()
+    return jsonify({"ok": True, "unread": counts})
 
 
 @app.route("/api/mail/messages")
