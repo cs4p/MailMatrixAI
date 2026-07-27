@@ -4,11 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-MailMatrixAI is a Gmail management pipeline with a Flask web UI and three CLI scripts that operate via IMAP:
+MailMatrixAI is an email management pipeline with a Flask web UI and three CLI scripts that operate via IMAP. It targets **Fastmail** (Cyrus IMAP) with an app-specific password — historical references to "Gmail" predate that. Gmail support would require OAuth (app passwords are disabled there) and is future work; do not assume Gmail-specific behavior (`[Gmail]/` namespace, All Mail semantics, SMTP auto-saving Sent).
 
-1. **`emailRulesInit.py`** — crawls all `MailMatrixCategories/*` Gmail labels, extracts sender addresses from every message, and writes `emailRules.json`
+1. **`emailRulesInit.py`** — crawls all `MailMatrixCategories/*` labels, extracts sender addresses from every message, and writes `emailRules.json`
 2. **`sortEmail.py`** — reads `emailRules.json` and files INBOX messages into their matching labels (then removes them from INBOX)
 3. **`emailSummary.py`** — generates a daily markdown report: action-required messages, unmatched INBOX emails with Claude-suggested labels, and a list of what was filed where
+
+On top of these, `app.py` serves a full **Mail client** at `/mail` (browse folders, read/compose/reply/forward, drag-and-drop filing) via the UID-based `/api/mail/*` endpoints — see below.
 
 ## Testing
 
@@ -60,10 +62,12 @@ python emailSummary.py --no-serve     # generate report without launching browse
 Credentials live in the **macOS Keychain** as a single JSON blob (service `MailMatrixAI`, account `credentials`) accessed via `commonFunctions.get_credential()`/`set_credential()` (the decoded blob is cached in-process). `get_credential` falls back to `os.environ` for keys missing from the blob. A `.env` file (loaded via `python-dotenv`) still works as a seed: on `app.py` startup, `_migrate_env_to_keychain()` copies these keys into the Keychain once:
 
 ```
-IMAP_SERVER=imap.gmail.com
+IMAP_SERVER=imap.fastmail.com
 IMAP_PORT=993
 IMAP_USERNAME=your_email@example.com
 IMAP_PASSWORD=your_app_password
+SMTP_SERVER=smtp.fastmail.com
+SMTP_PORT=465
 ANTHROPIC_API_KEY=sk-ant-...
 ```
 
@@ -88,6 +92,17 @@ Four pages served at `/`, `/summaries`, `/rules`, `/config`. API endpoints under
 | `POST /accept` | Calls `accept_filing()` from `emailSummary.py` |
 | `POST /api/config` | Writes fields to the Keychain via `set_credential` |
 | `GET /api/test-connection` | Attempts IMAP connect/logout, returns `{ok, message/error}` |
+| `GET /mail` | Mail client page (three-pane: folders / message list / reading pane) |
+| `GET /api/mail/folders` | Full folder tree via `list_folders()` (cached 60s; invalidated on folder create) |
+| `GET /api/mail/unread` | `{name: unseen_count}` via one STATUS (UNSEEN) per selectable folder (uncached) |
+| `GET /api/mail/messages?folder=&page=&page_size=` | UID-paginated message list, newest first (`FLAGS BODY.PEEK[HEADER…]`) |
+| `GET /api/mail/message?folder=&uid=` | Full message via `BODY.PEEK[]` + `extract_message_parts`; marks `\Seen` |
+| `GET /api/mail/attachment?folder=&uid=&part=` | Downloads one attachment (always `application/octet-stream`) |
+| `POST /api/mail/move` | `move_message_uid`; a `MailMatrixCategories/*` target also creates a sender rule |
+| `POST /api/mail/send` | Builds an `EmailMessage`, sends via `send_smtp`, APPENDs a copy to the Sent folder |
+| `POST /api/mail/folders/create` | `imap.create()` a new folder (name must pass `validate_new_folder_name`) |
+
+**Mail-client conventions:** the `/api/mail/*` surface is **UID-based** (`imap.uid('SEARCH'|'FETCH'|'COPY'|'STORE'|'EXPUNGE', …)`) so message references survive expunges — do not mix in sequence-number operations there. Folder params are gated by `validate_folder` (relaxed `validate_label` that still rejects quotes/CRLF/traversal but allows any folder, not just `MailMatrixCategories/*`); `uid`/`part` must match `^\d+$`. The client passes back the **raw wire folder name** verbatim (`list_folders` returns `name` = raw, `display` = `decode_modified_utf7(name)`); there is no encode path, so folder *creation* is ASCII-only. HTML bodies render in a `<iframe sandbox>` with a CSP that blocks images until the user opts in — never render server-fetched HTML same-origin. Since this is Fastmail (not Gmail), SMTP-sent mail is **not** auto-saved: `_append_to_sent()` does an IMAP APPEND to the `\Sent` folder (best-effort; a failed APPEND is a warning, never a send failure).
 
 POST bodies are read through `_json_body()` (never `request.get_json` directly) so malformed/non-object bodies degrade to `{}` and the handlers' own validation runs instead of a 500. Inbox-analysis jobs (`/api/inbox-analyze/*`) run in daemon threads tracked in `_inbox_jobs`; always look jobs up via `_get_job()` (takes the lock).
 
@@ -97,7 +112,7 @@ Templates in `templates/` extend `templates/base.html`. Static files in `static/
 
 All scripts import from here:
 - `imap_call(fn)` — wraps any IMAP operation with exponential-backoff retry on rate-limit errors (`_RATE_LIMIT_PHRASES`)
-- `fetch_many(imap, msg_ids, parts)` — batched FETCH over comma-joined ID sets (chunked by `FETCH_CHUNK_SIZE`); returns `{msg_id: {"header": bytes|None, "text": bytes|None}}`. All multi-message fetch paths go through this — never fetch in a per-message loop
+- `fetch_many(imap, msg_ids, parts, use_uid=False)` — batched FETCH over comma-joined ID sets (chunked by `FETCH_CHUNK_SIZE`); returns `{msg_id: {"header": bytes|None, "text": bytes|None}}`. All multi-message fetch paths go through this — never fetch in a per-message loop. With `use_uid=True` it runs `UID FETCH`, keys by UID, and adds a `"flags"` key
 - `connect_to_imap()` — `IMAP4_SSL` + login
 - `extract_email_address()` — pulls bare address from `"Name <addr>"` strings
 - `get_all_labels(imap, parent_label=None)` — lists folders, optionally filtered to children of `parent_label`
@@ -105,9 +120,11 @@ All scripts import from here:
 - `imap_date(d)` — formats a `date` as `D-Mon-YYYY` for IMAP SEARCH `ON`
 - `setup_logging(log_file)` — configures `logging.basicConfig` with stdout + file handler; call at the top of each `main()`
 
-### Gmail label conventions
+Mail-client helpers (used by `/api/mail/*`): `validate_folder` / `validate_new_folder_name`, `decode_modified_utf7`, `list_folders` (flags + special-use + selectability), `uid_search_all`, `extract_message_parts` (headers/text/html/attachments), `get_attachment`, `move_message_uid` (COPY→`\Deleted`→UID EXPUNGE, only-delete-after-copy-OK), `add_sender_to_label_rule` (also reused by `emailSummary.accept_filing`), `send_smtp` (465→SSL, else STARTTLS). Credential keys include `SMTP_SERVER`/`SMTP_PORT` (default `smtp.fastmail.com:465`).
 
-Labels under `MailMatrixCategories/` are the only ones touched (e.g. `MailMatrixCategories/Work`). The `/` separator is the Gmail IMAP hierarchy delimiter. Folder names must be quoted in IMAP commands: `imap.select('"MailMatrixCategories/Work"')`.
+### Label conventions
+
+The sorting pipeline only touches labels under `MailMatrixCategories/` (e.g. `MailMatrixCategories/Work`); the Mail client browses the whole folder tree. `/` is the IMAP hierarchy delimiter (from each folder's LIST response). Folder names must be quoted in IMAP commands: `imap.select('"MailMatrixCategories/Work"')`.
 
 ### `emailRulesInit.py` pipeline
 

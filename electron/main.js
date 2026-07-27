@@ -2,7 +2,7 @@
 // localhost port using the repo's Python venv, then opens it in a
 // BrowserWindow. The page is plain server-rendered HTML making same-origin
 // fetches, so no preload script is needed and context isolation stays on.
-const { app, BrowserWindow } = require('electron');
+const { app, BrowserWindow, shell } = require('electron');
 const { spawn } = require('child_process');
 const http = require('http');
 const net = require('net');
@@ -79,6 +79,28 @@ async function start() {
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
   });
   win.once('ready-to-show', () => win.show());
+
+  // Route target="_blank" links: the app's own pages (e.g. summary previews)
+  // open in a new in-app window; links in rendered email bodies point at real
+  // sites and open in the user's default browser instead.
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    let sameOrigin = false;
+    try {
+      sameOrigin = new URL(url).origin === new URL(win.webContents.getURL()).origin;
+    } catch (_) { /* malformed URL — treat as external */ }
+    if (sameOrigin) {
+      return {
+        action: 'allow',
+        overrideBrowserWindowOptions: {
+          width: 1000,
+          height: 800,
+          webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
+        },
+      };
+    }
+    if (/^https?:/i.test(url)) shell.openExternal(url);
+    return { action: 'deny' };
+  });
 
   const fail = (msg, detail) => win.loadFile(path.join(__dirname, 'error.html'), {
     query: { msg, detail: (detail || '').slice(-4000) },

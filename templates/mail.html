@@ -1,0 +1,608 @@
+{% extends "base.html" %}
+{% block title %}Mail — MailMatrix AI{% endblock %}
+{% block main_class %} main-wide{% endblock %}
+
+{% block content %}
+<div class="mail-layout">
+  <aside class="mail-sidebar">
+    <button class="btn btn-primary mail-compose-btn" onclick="openCompose('new')">Compose</button>
+    <div class="mail-folder-tree" id="folder-tree">
+      <div class="mail-loading">Loading folders…</div>
+    </div>
+    <div class="mail-sidebar-footer">
+      <button class="btn btn-secondary btn-sm" onclick="openNewFolderModal()">+ New Label</button>
+    </div>
+  </aside>
+
+  <section class="mail-list">
+    <div class="mail-list-header" id="mail-list-header">Select a folder</div>
+    <div class="mail-list-scroll" id="mail-list-scroll">
+      <div id="message-rows"></div>
+      <div id="list-sentinel" style="height:1px"></div>
+      <div class="mail-empty" id="mail-list-empty" style="display:none">No messages</div>
+    </div>
+  </section>
+
+  <section class="mail-reading">
+    <div class="mail-empty" id="reading-empty">Select a message to read it</div>
+    <div id="reading-content" style="display:none"></div>
+  </section>
+</div>
+
+<!-- Compose modal -->
+<div id="compose-modal" class="modal-overlay" onclick="if(event.target===this)closeCompose()">
+  <div class="modal-card modal-card-wide">
+    <div class="modal-header">
+      <h3 class="modal-title" id="compose-title">New Message</h3>
+      <button class="modal-close" onclick="closeCompose()">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label for="compose-to">To</label>
+        <input id="compose-to" type="text" placeholder="someone@example.com, other@example.com">
+      </div>
+      <div class="form-row form-row-even">
+        <div class="form-group">
+          <label for="compose-cc">Cc</label>
+          <input id="compose-cc" type="text">
+        </div>
+        <div class="form-group">
+          <label for="compose-bcc">Bcc</label>
+          <input id="compose-bcc" type="text">
+        </div>
+      </div>
+      <div class="form-group">
+        <label for="compose-subject">Subject</label>
+        <input id="compose-subject" type="text">
+      </div>
+      <div class="form-group">
+        <label for="compose-body">Message</label>
+        <textarea id="compose-body" rows="12"></textarea>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-primary" id="compose-send" onclick="sendMail()">Send</button>
+      <button class="btn btn-secondary" onclick="closeCompose()">Cancel</button>
+      <span class="modal-status" id="compose-status"></span>
+    </div>
+  </div>
+</div>
+
+<!-- New label modal -->
+<div id="folder-modal" class="modal-overlay" onclick="if(event.target===this)closeNewFolderModal()">
+  <div class="modal-card">
+    <div class="modal-header">
+      <h3 class="modal-title">New Label</h3>
+      <button class="modal-close" onclick="closeNewFolderModal()">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label for="folder-name">Folder name</label>
+        <input id="folder-name" type="text" value="MailMatrixCategories/">
+      </div>
+      <p class="form-hint">Labels under MailMatrixCategories/ take part in sorting rules; anything else is a plain folder.</p>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-primary" id="folder-create" onclick="createFolder()">Create</button>
+      <button class="btn btn-secondary" onclick="closeNewFolderModal()">Cancel</button>
+      <span class="modal-status" id="folder-status"></span>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast" aria-live="polite"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const USERNAME = {{ username | tojson }};
+  const PAGE_SIZE = 50;
+
+  // ── State ──────────────────────────────────────────────────────────────────
+  let FOLDERS = [];
+  let UNREAD = {};            // {folder name: unseen count}
+  let currentFolder = null;   // raw wire name
+  let currentPage = 0;
+  let totalMessages = 0;
+  let loadingPage = false;
+  let currentMessage = null;  // {uid, folder, headers, ...} of the open message
+
+  function folderByName(name) { return FOLDERS.find(f => f.name === name); }
+  function specialFolder(role) { return FOLDERS.find(f => f.special === role); }
+  function displayName(name) {
+    const f = folderByName(name);
+    return f ? f.display : name;
+  }
+  function shortDisplay(f, depth) {
+    const parts = f.display.split(f.delimiter || '/');
+    return parts[parts.length - 1] || f.display;
+  }
+
+  // ── Folder sidebar ─────────────────────────────────────────────────────────
+  const FOLDER_ICONS = {
+    inbox: '📥', sent: '📤', drafts: '📝', archive: '🗄️',
+    spam: '⚠️', trash: '🗑️', starred: '⭐', label: '🏷️', folder: '📁',
+  };
+
+  async function loadFolders() {
+    const tree = document.getElementById('folder-tree');
+    try {
+      const res = await fetch('/api/mail/folders');
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.error || 'Failed to load folders');
+      FOLDERS = data.folders;
+      renderTree();
+      // Open the inbox by default so the screen isn't empty on load.
+      if (!currentFolder) {
+        const inbox = FOLDERS.find(f => f.name.toUpperCase() === 'INBOX' && f.selectable);
+        if (inbox) selectFolder(inbox.name);
+      }
+      loadUnread();
+    } catch (err) {
+      tree.innerHTML = '';
+      const msg = document.createElement('div');
+      msg.className = 'mail-empty';
+      msg.textContent = 'Could not load folders: ' + err.message;
+      tree.appendChild(msg);
+    }
+  }
+
+  async function loadUnread() {
+    try {
+      const res = await fetch('/api/mail/unread');
+      const data = await res.json();
+      if (data.ok) { UNREAD = data.unread || {}; renderTree(); }
+    } catch (_) { /* non-fatal: badges just won't show */ }
+  }
+
+  function orderedFolders() {
+    // INBOX, then special folders, then MailMatrixCategories, then the rest.
+    const used = new Set();
+    const out = [];
+    const take = f => { if (f && !used.has(f.name)) { used.add(f.name); out.push(f); } };
+
+    take(FOLDERS.find(f => f.name.toUpperCase() === 'INBOX'));
+    ['sent', 'drafts', 'archive', 'spam', 'trash'].forEach(role => take(specialFolder(role)));
+    FOLDERS.filter(f => f.name === 'MailMatrixCategories' || f.name.startsWith('MailMatrixCategories/'))
+      .forEach(take);
+    FOLDERS.forEach(take);
+    return out;
+  }
+
+  function renderTree() {
+    const tree = document.getElementById('folder-tree');
+    tree.innerHTML = '';
+    for (const f of orderedFolders()) {
+      const depth = (f.name.split(f.delimiter || '/').length - 1);
+      const item = document.createElement('div');
+      item.className = 'folder-item' + (f.selectable ? '' : ' folder-noselect')
+        + (f.name === currentFolder ? ' active' : '');
+      item.style.paddingLeft = (0.85 + depth * 0.9) + 'rem';
+      item.dataset.name = f.name;
+
+      const icon = document.createElement('span');
+      icon.className = 'folder-icon';
+      const role = f.name.toUpperCase() === 'INBOX' ? 'inbox'
+        : f.special || (f.name.startsWith('MailMatrixCategories/') ? 'label' : 'folder');
+      icon.textContent = FOLDER_ICONS[role] || FOLDER_ICONS.folder;
+
+      const label = document.createElement('span');
+      label.className = 'folder-name';
+      label.textContent = shortDisplay(f, depth);
+      label.title = f.display;
+
+      item.appendChild(icon);
+      item.appendChild(label);
+
+      const unread = UNREAD[f.name] || 0;
+      if (unread > 0) {
+        item.classList.add('folder-unread');
+        const badge = document.createElement('span');
+        badge.className = 'folder-badge';
+        badge.textContent = unread > 999 ? '999+' : unread;
+        item.appendChild(badge);
+      }
+
+      if (f.selectable) {
+        item.addEventListener('click', () => selectFolder(f.name));
+        item.addEventListener('dragover', e => { e.preventDefault(); item.classList.add('drop-target'); });
+        item.addEventListener('dragleave', () => item.classList.remove('drop-target'));
+        item.addEventListener('drop', e => {
+          e.preventDefault();
+          item.classList.remove('drop-target');
+          handleDrop(e, f.name);
+        });
+      }
+      tree.appendChild(item);
+    }
+  }
+
+  // ── Message list ───────────────────────────────────────────────────────────
+  function selectFolder(name) {
+    currentFolder = name;
+    currentPage = 0;
+    totalMessages = 0;
+    document.getElementById('message-rows').innerHTML = '';
+    document.getElementById('mail-list-empty').style.display = 'none';
+    document.getElementById('mail-list-header').textContent = displayName(name);
+    document.querySelectorAll('.folder-item').forEach(el =>
+      el.classList.toggle('active', el.dataset.name === name));
+    clearReadingPane();
+    loadNextPage();
+  }
+
+  async function loadNextPage() {
+    if (loadingPage || !currentFolder) return;
+    if (currentPage > 0 && currentPage * PAGE_SIZE >= totalMessages) return;
+    loadingPage = true;
+    const folder = currentFolder;
+    try {
+      const res = await fetch('/api/mail/messages?folder=' + encodeURIComponent(folder)
+        + '&page=' + (currentPage + 1) + '&page_size=' + PAGE_SIZE);
+      const data = await res.json();
+      if (folder !== currentFolder) return;  // user switched folders mid-flight
+      if (!data.ok) throw new Error(data.error || 'Failed to load messages');
+      currentPage = data.page;
+      totalMessages = data.total;
+      document.getElementById('mail-list-header').textContent =
+        displayName(folder) + ' — ' + data.total + ' message' + (data.total === 1 ? '' : 's');
+      const rows = document.getElementById('message-rows');
+      for (const msg of data.messages) rows.appendChild(renderRow(msg, folder));
+      document.getElementById('mail-list-empty').style.display =
+        data.total === 0 ? 'block' : 'none';
+    } catch (err) {
+      showToast('Error: ' + err.message, 'error');
+    } finally {
+      loadingPage = false;
+    }
+  }
+
+  function formatDate(raw) {
+    const d = new Date(raw);
+    if (isNaN(d)) return raw || '';
+    const now = new Date();
+    if (d.toDateString() === now.toDateString()) {
+      return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    }
+    if (d.getFullYear() === now.getFullYear()) {
+      return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+    }
+    return d.toLocaleDateString([], { year: 'numeric', month: 'short', day: 'numeric' });
+  }
+
+  function renderRow(msg, folder) {
+    const row = document.createElement('div');
+    row.className = 'mail-row' + (msg.seen ? '' : ' unseen');
+    row.draggable = true;
+    row.dataset.uid = msg.uid;
+
+    const top = document.createElement('div');
+    top.className = 'mail-row-top';
+    const from = document.createElement('span');
+    from.className = 'mail-row-from';
+    from.textContent = msg.from_display || msg.from_addr || '(unknown sender)';
+    const when = document.createElement('span');
+    when.className = 'mail-row-date';
+    when.textContent = formatDate(msg.date);
+    top.appendChild(from);
+    top.appendChild(when);
+
+    const subject = document.createElement('div');
+    subject.className = 'mail-row-subject';
+    subject.textContent = msg.subject;
+
+    row.appendChild(top);
+    row.appendChild(subject);
+
+    row.addEventListener('click', () => openMessage(msg.uid, folder, row));
+    row.addEventListener('dragstart', e => {
+      e.dataTransfer.setData('text/plain', JSON.stringify({ uid: msg.uid, folder }));
+      e.dataTransfer.effectAllowed = 'move';
+      row.classList.add('dragging');
+    });
+    row.addEventListener('dragend', () => row.classList.remove('dragging'));
+    return row;
+  }
+
+  const sentinel = document.getElementById('list-sentinel');
+  new IntersectionObserver(entries => {
+    if (entries.some(e => e.isIntersecting)) loadNextPage();
+  }, { root: document.getElementById('mail-list-scroll'), rootMargin: '400px' }).observe(sentinel);
+
+  // ── Reading pane ───────────────────────────────────────────────────────────
+  function clearReadingPane() {
+    currentMessage = null;
+    document.getElementById('reading-empty').style.display = 'flex';
+    const content = document.getElementById('reading-content');
+    content.style.display = 'none';
+    content.innerHTML = '';
+  }
+
+  async function openMessage(uid, folder, row) {
+    document.querySelectorAll('.mail-row').forEach(el => el.classList.remove('active'));
+    if (row) row.classList.add('active');
+    const wasUnseen = !!(row && row.classList.contains('unseen'));
+    try {
+      const res = await fetch('/api/mail/message?folder=' + encodeURIComponent(folder)
+        + '&uid=' + encodeURIComponent(uid));
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.error || 'Failed to load message');
+      if (row) row.classList.remove('unseen');
+      // Opening marks the message read server-side; reflect that in the badge.
+      if (wasUnseen && UNREAD[folder]) {
+        UNREAD[folder] = Math.max(0, UNREAD[folder] - 1);
+        renderTree();
+      }
+      currentMessage = { uid, folder, ...data };
+      renderMessage();
+    } catch (err) {
+      showToast('Error: ' + err.message, 'error');
+    }
+  }
+
+  function buildSrcdoc(html, allowImages) {
+    const imgSrc = allowImages ? "img-src https: http: data: cid:" : "img-src 'none'";
+    const csp = "default-src 'none'; style-src 'unsafe-inline'; " + imgSrc;
+    return '<!doctype html><html><head>'
+      + '<meta http-equiv="Content-Security-Policy" content="' + csp + '">'
+      + '<base target="_blank">'
+      + '<style>body{margin:12px;font-family:-apple-system,sans-serif;overflow-wrap:break-word}</style>'
+      + '</head><body>' + html + '</body></html>';
+  }
+
+  function renderHtmlBody(container, html, allowImages) {
+    container.innerHTML = '';
+    const iframe = document.createElement('iframe');
+    iframe.className = 'mail-body-frame';
+    // No allow-scripts / allow-same-origin: scripts are inert and the frame has
+    // an opaque origin. allow-popups lets links open (in a new window, per
+    // <base target="_blank">).
+    iframe.setAttribute('sandbox', 'allow-popups allow-popups-to-escape-sandbox');
+    iframe.srcdoc = buildSrcdoc(html, allowImages);
+    container.appendChild(iframe);
+  }
+
+  function renderMessage() {
+    const m = currentMessage;
+    const h = m.headers;
+    document.getElementById('reading-empty').style.display = 'none';
+    const content = document.getElementById('reading-content');
+    content.style.display = 'block';
+
+    const moveOptions = FOLDERS
+      .filter(f => f.selectable && f.name !== m.folder)
+      .map(f => '<option value="' + escAttr(f.name) + '">' + esc(f.display) + '</option>')
+      .join('');
+
+    let attachmentsHtml = '';
+    if (m.attachments.length) {
+      attachmentsHtml = '<div class="mail-attachments">' + m.attachments.map(a =>
+        '<a class="attachment-chip" href="/api/mail/attachment?folder=' + encodeURIComponent(m.folder)
+        + '&uid=' + encodeURIComponent(m.uid) + '&part=' + a.part + '">📎 '
+        + esc(a.filename) + ' <span class="attachment-size">(' + formatSize(a.size) + ')</span></a>'
+      ).join('') + '</div>';
+    }
+
+    content.innerHTML =
+      '<div class="mail-msg-header">'
+      + '<h2 class="mail-msg-subject">' + esc(h.subject || '(no subject)') + '</h2>'
+      + '<div class="mail-msg-meta"><strong>From:</strong> ' + esc(h.from) + '</div>'
+      + (h.to ? '<div class="mail-msg-meta"><strong>To:</strong> ' + esc(h.to) + '</div>' : '')
+      + (h.cc ? '<div class="mail-msg-meta"><strong>Cc:</strong> ' + esc(h.cc) + '</div>' : '')
+      + '<div class="mail-msg-meta"><strong>Date:</strong> ' + esc(h.date) + '</div>'
+      + '<div class="mail-msg-actions">'
+      + '<button class="btn btn-secondary btn-sm" onclick="openCompose(\'reply\')">Reply</button>'
+      + '<button class="btn btn-secondary btn-sm" onclick="openCompose(\'replyAll\')">Reply All</button>'
+      + '<button class="btn btn-secondary btn-sm" onclick="openCompose(\'forward\')">Forward</button>'
+      + '<select class="label-select" id="move-select"><option value="">Move to…</option>' + moveOptions + '</select>'
+      + '<button class="btn btn-secondary btn-sm btn-danger" onclick="deleteCurrentMessage()">Delete</button>'
+      + '</div>'
+      + attachmentsHtml
+      + '</div>'
+      + '<div id="mail-body-container"></div>';
+
+    document.getElementById('move-select').addEventListener('change', e => {
+      if (e.target.value) moveMessage(m.uid, m.folder, e.target.value);
+    });
+
+    const container = document.getElementById('mail-body-container');
+    if (m.body_html) {
+      renderHtmlBody(container, m.body_html, false);
+      if (/\bsrc\s*=\s*["']?https?:/i.test(m.body_html)) {
+        const btn = document.createElement('button');
+        btn.className = 'btn btn-secondary btn-sm mail-load-images';
+        btn.textContent = 'Load remote images';
+        btn.onclick = () => { renderHtmlBody(container, m.body_html, true); };
+        container.parentNode.insertBefore(btn, container);
+      }
+    } else {
+      const pre = document.createElement('pre');
+      pre.className = 'mail-body-text';
+      pre.textContent = m.body_text || '(empty message)';
+      container.appendChild(pre);
+    }
+  }
+
+  function formatSize(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+  }
+
+  // ── Move / drag-drop / delete ──────────────────────────────────────────────
+  function handleDrop(e, targetFolder) {
+    let payload;
+    try { payload = JSON.parse(e.dataTransfer.getData('text/plain')); } catch { return; }
+    if (!payload || !payload.uid || !payload.folder) return;
+    if (payload.folder === targetFolder) return;
+    moveMessage(payload.uid, payload.folder, targetFolder);
+  }
+
+  async function moveMessage(uid, folder, target) {
+    try {
+      const data = await postJSON('/api/mail/move', { folder, uid, target });
+      if (!data.ok) throw new Error(data.error || 'Move failed');
+      const row = document.querySelector('.mail-row[data-uid="' + CSS.escape(uid) + '"]');
+      if (row && folder === currentFolder) {
+        row.remove();
+        totalMessages = Math.max(0, totalMessages - 1);
+        document.getElementById('mail-list-header').textContent =
+          displayName(folder) + ' — ' + totalMessages + ' message' + (totalMessages === 1 ? '' : 's');
+        if (totalMessages === 0) document.getElementById('mail-list-empty').style.display = 'block';
+      }
+      if (currentMessage && currentMessage.uid === uid && currentMessage.folder === folder) {
+        clearReadingPane();
+      }
+      const label = displayName(target);
+      showToast(data.rule_created
+        ? 'Moved to ' + label + ' — rule created for ' + data.from_addr
+        : 'Moved to ' + label);
+      loadUnread();  // source/target unread counts may have changed
+    } catch (err) {
+      showToast('Error: ' + err.message, 'error');
+    }
+  }
+
+  function deleteCurrentMessage() {
+    if (!currentMessage) return;
+    const trash = specialFolder('trash');
+    if (!trash) { showToast('No Trash folder found', 'error'); return; }
+    moveMessage(currentMessage.uid, currentMessage.folder, trash.name);
+  }
+
+  // ── Compose ────────────────────────────────────────────────────────────────
+  let composeThreading = { in_reply_to: '', references: '' };
+
+  function extractAddr(s) {
+    const m = /<([^>]+)>/.exec(s || '');
+    return (m ? m[1] : (s || '')).trim().toLowerCase();
+  }
+
+  function addrListMinusSelf(headerValue) {
+    return (headerValue || '').split(',')
+      .map(s => s.trim()).filter(Boolean)
+      .filter(s => extractAddr(s) !== (USERNAME || '').toLowerCase());
+  }
+
+  function quoteOriginal(m) {
+    const intro = 'On ' + (m.headers.date || 'an earlier date') + ', ' + (m.headers.from || 'someone') + ' wrote:';
+    const body = (m.body_text || '').split('\n').map(l => '> ' + l).join('\n');
+    return '\n\n' + intro + '\n' + body + '\n';
+  }
+
+  function openCompose(mode) {
+    const m = currentMessage;
+    if (mode !== 'new' && !m) return;
+    composeThreading = { in_reply_to: '', references: '' };
+    const set = (id, v) => { document.getElementById(id).value = v; };
+    set('compose-to', ''); set('compose-cc', ''); set('compose-bcc', '');
+    set('compose-subject', ''); set('compose-body', '');
+    document.getElementById('compose-status').textContent = '';
+    let title = 'New Message';
+
+    if (mode === 'reply' || mode === 'replyAll') {
+      title = 'Reply';
+      const subj = m.headers.subject || '';
+      set('compose-subject', /^re:/i.test(subj) ? subj : 'Re: ' + subj);
+      set('compose-to', extractAddr(m.headers.from));
+      if (mode === 'replyAll') {
+        const others = addrListMinusSelf(m.headers.to).map(extractAddr)
+          .filter(a => a && a !== extractAddr(m.headers.from));
+        if (others.length) set('compose-to', extractAddr(m.headers.from) + ', ' + others.join(', '));
+        const cc = addrListMinusSelf(m.headers.cc).map(extractAddr).filter(Boolean);
+        if (cc.length) set('compose-cc', cc.join(', '));
+      }
+      set('compose-body', quoteOriginal(m));
+      composeThreading.in_reply_to = m.headers.message_id || '';
+      composeThreading.references =
+        ((m.headers.references || '') + ' ' + (m.headers.message_id || '')).trim();
+    } else if (mode === 'forward') {
+      title = 'Forward';
+      const subj = m.headers.subject || '';
+      set('compose-subject', /^fwd:/i.test(subj) ? subj : 'Fwd: ' + subj);
+      set('compose-body', '\n\n---------- Forwarded message ----------\n'
+        + 'From: ' + (m.headers.from || '') + '\n'
+        + 'Date: ' + (m.headers.date || '') + '\n'
+        + 'Subject: ' + (m.headers.subject || '') + '\n'
+        + (m.headers.to ? 'To: ' + m.headers.to + '\n' : '')
+        + '\n' + (m.body_text || ''));
+    }
+
+    document.getElementById('compose-title').textContent = title;
+    document.getElementById('compose-modal').style.display = 'flex';
+    document.getElementById(mode === 'new' ? 'compose-to' : 'compose-body').focus();
+  }
+
+  function closeCompose() {
+    document.getElementById('compose-modal').style.display = 'none';
+  }
+
+  async function sendMail() {
+    const to = document.getElementById('compose-to').value.trim();
+    const status = document.getElementById('compose-status');
+    if (!to) { status.textContent = 'Add at least one recipient.'; return; }
+    const btn = document.getElementById('compose-send');
+    btn.disabled = true;
+    btn.textContent = 'Sending…';
+    status.textContent = '';
+    try {
+      const data = await postJSON('/api/mail/send', {
+        to,
+        cc: document.getElementById('compose-cc').value.trim(),
+        bcc: document.getElementById('compose-bcc').value.trim(),
+        subject: document.getElementById('compose-subject').value,
+        body: document.getElementById('compose-body').value,
+        in_reply_to: composeThreading.in_reply_to,
+        references: composeThreading.references,
+      });
+      if (!data.ok) throw new Error(data.error || 'Send failed');
+      closeCompose();
+      showToast(data.sent_copy_saved ? 'Message sent' : 'Message sent (no copy saved to Sent)',
+        data.sent_copy_saved ? 'success' : 'error');
+    } catch (err) {
+      status.textContent = err.message;
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Send';
+    }
+  }
+
+  // ── New label ──────────────────────────────────────────────────────────────
+  function openNewFolderModal() {
+    document.getElementById('folder-status').textContent = '';
+    document.getElementById('folder-modal').style.display = 'flex';
+    const input = document.getElementById('folder-name');
+    input.focus();
+    input.setSelectionRange(input.value.length, input.value.length);
+  }
+
+  function closeNewFolderModal() {
+    document.getElementById('folder-modal').style.display = 'none';
+  }
+
+  async function createFolder() {
+    const name = document.getElementById('folder-name').value.trim();
+    const status = document.getElementById('folder-status');
+    if (!name) { status.textContent = 'Enter a folder name.'; return; }
+    const btn = document.getElementById('folder-create');
+    btn.disabled = true;
+    try {
+      const data = await postJSON('/api/mail/folders/create', { name });
+      if (!data.ok) throw new Error(data.error || 'Create failed');
+      closeNewFolderModal();
+      showToast('Created ' + name);
+      await loadFolders();
+    } catch (err) {
+      status.textContent = err.message;
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') { closeCompose(); closeNewFolderModal(); }
+  });
+
+  loadFolders();
+</script>
+{% endblock %}

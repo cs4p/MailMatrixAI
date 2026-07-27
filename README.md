@@ -10,7 +10,9 @@ Three CLI scripts handle the core pipeline:
 2. **`sortEmail.py`** — Reads `emailRules.json` and moves matching INBOX messages into their folders.
 3. **`emailSummary.py`** — Generates a daily HTML report: action-required items, unmatched INBOX emails with Claude-suggested folders, and a log of what was filed.
 
-The web UI (`app.py`) wraps all three scripts and adds a rules browser with search, faceted filtering, and inline editing.
+The web UI (`app.py`) wraps all three scripts and adds a rules browser with search, faceted filtering, and inline editing, plus a full **Mail** client (`/mail`) — browse every folder, read messages (with sanitized HTML rendering and attachment downloads), compose/reply/forward over SMTP, create labels, and drag-and-drop a message onto a `MailMatrixCategories/*` label to move it and auto-create a filing rule.
+
+> **Provider note:** the mail client is developed and tested against **Fastmail** (app-specific password with the SMTP scope enabled). It uses standard IMAP/SMTP, so other providers may work, but Gmail — which requires OAuth rather than app passwords — is not yet supported.
 
 ## Setup
 
@@ -33,22 +35,30 @@ needed. Alternatively, create a `.env` (see `.env.example`); its values are
 migrated into the Keychain the first time `app.py` starts:
 
 ```
-IMAP_SERVER=imap.your-provider.com
+IMAP_SERVER=imap.fastmail.com
 IMAP_PORT=993
 IMAP_USERNAME=your@email.com
-IMAP_PASSWORD=your_password
+IMAP_PASSWORD=your_app_password
+SMTP_SERVER=smtp.fastmail.com
+SMTP_PORT=465
 ANTHROPIC_API_KEY=sk-ant-...
 ```
 
+`SMTP_SERVER`/`SMTP_PORT` are only needed to send mail from the Mail client
+(they default to `smtp.fastmail.com:465` when unset); sending reuses the IMAP
+username and app password, so the Fastmail app password must have the **SMTP**
+scope enabled.
+
 Common server addresses:
 
-| Provider | IMAP server |
-|---|---|
-| Gmail | `imap.gmail.com` (use an [App Password](https://support.google.com/accounts/answer/185833)) |
-| Fastmail | `imap.fastmail.com` |
-| Outlook / Hotmail | `outlook.office365.com` |
-| Apple iCloud | `imap.mail.me.com` |
-| Yahoo | `imap.mail.yahoo.com` |
+| Provider | IMAP server | SMTP server |
+|---|---|---|
+| Fastmail | `imap.fastmail.com` | `smtp.fastmail.com` |
+| Outlook / Hotmail | `outlook.office365.com` | `smtp.office365.com` |
+| Apple iCloud | `imap.mail.me.com` | `smtp.mail.me.com` |
+| Yahoo | `imap.mail.yahoo.com` | `smtp.mail.yahoo.com` |
+
+Gmail is intentionally omitted — it requires OAuth, which this app does not yet support.
 
 ## Usage
 
@@ -77,6 +87,8 @@ The server is configurable via environment variables: `MAILMATRIX_HOST`
 | Page | Path | What it does |
 |---|---|---|
 | Dashboard | `/` | Inbox count, sort button, generate summaries for any date |
+| Mail | `/mail` | Full mail client: browse folders, read/compose/reply/forward, drag-and-drop filing |
+| AI Inbox | `/inbox` | Claude-analyzed inbox recommendations |
 | Summaries | `/summaries` | Browse and view saved HTML reports |
 | Rules | `/rules` | Search and edit filing rules by sender or domain |
 | Config | `/config` | Update credentials, test IMAP connection |
