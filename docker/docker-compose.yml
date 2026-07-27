@@ -1,0 +1,15 @@
+services:
+  dovecot:
+    build: .
+    container_name: mailmatrix-imap
+    ports:
+      - "143:143"
+    environment:
+      DOVECOT_USER: ${DOVECOT_USER:-testuser}
+      DOVECOT_PASSWORD: ${DOVECOT_PASSWORD:-testpass}
+    volumes:
+      - maildata:/home
+    restart: unless-stopped
+
+volumes:
+  maildata:
