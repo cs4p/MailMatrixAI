@@ -708,8 +708,9 @@ def generate_report(target_date: date, run_sort: bool = True) -> dict:
     need_attention = len(analysis.get('action_required', []))
     processed = unfiled + total_filed
 
-    # L5: anchor output to the script's directory, not CWD
-    output_dir = os.path.join(_SCRIPT_DIR, "emailSummary")
+    # L5: anchor output to the script's directory, not CWD (MAILMATRIX_DATA_DIR
+    # relocates it to a mounted volume in the container image).
+    output_dir = os.path.join(os.environ.get("MAILMATRIX_DATA_DIR", _SCRIPT_DIR), "emailSummary")
     os.makedirs(output_dir, exist_ok=True)
     output_file = os.path.join(output_dir, f"email_summary_{target_date.strftime('%Y-%m-%d')}.html")
     with open(output_file, 'w', encoding='utf-8') as f:
@@ -865,7 +866,10 @@ def main() -> None:
     if no_serve:
         return
 
-    rules_path = os.environ.get("RULES_PATH", os.path.join(_SCRIPT_DIR, "emailRules.json"))
+    rules_path = os.environ.get(
+        "RULES_PATH",
+        os.path.join(os.environ.get("MAILMATRIX_DATA_DIR", _SCRIPT_DIR), "emailRules.json"),
+    )
     accept_fn = lambda body: accept_filing(
         body,
         get_credential("IMAP_SERVER"),

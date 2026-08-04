@@ -1,0 +1,17 @@
+# Persists learned filing rules (emailRules.json) and generated summaries
+# across pod restarts. Mounted at /data (MAILMATRIX_DATA_DIR) in the pod.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mailmatrixai-data
+  labels:
+    app: mailmatrixai
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+  # Uncomment and set to a class that exists in your cluster if the default
+  # StorageClass is not what you want:
+  # storageClassName: standard

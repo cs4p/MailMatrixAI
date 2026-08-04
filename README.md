@@ -103,6 +103,21 @@ python emailSummary.py 2026-06-27     # summary for a specific date
 python emailSummary.py --no-serve     # generate report without opening a browser
 ```
 
+### Docker / Kubernetes
+
+A production container image is built and published to GHCR
+(`ghcr.io/cs4p/mailmatrixai`) by [`.github/workflows/docker-publish.yml`](.github/workflows/docker-publish.yml).
+In a container there is no macOS Keychain, so credentials are read from the
+environment instead (`IMAP_*`, `SMTP_*`, `ANTHROPIC_API_KEY`), and persistent
+state lives in `MAILMATRIX_DATA_DIR` (`/data`).
+
+```bash
+docker run --rm -p 5000:5000 --env-file .env ghcr.io/cs4p/mailmatrixai:latest
+```
+
+Kubernetes manifests and step-by-step deployment instructions are in
+[`k8s/`](k8s/README.md).
+
 ## Folder conventions
 
 Filing targets must live under a `MailMatrixCategories/` parent folder (e.g. `MailMatrixCategories/Work`, `MailMatrixCategories/Newsletters`). Create these folders in your mail client before running `emailRulesInit.py`. The `/` character is the IMAP hierarchy delimiter — most providers support nested folders this way.

@@ -1,0 +1,30 @@
+# Personal data & secrets — never bake these into the image
+.env
+.env.*
+!.env.example
+emailRules.json
+emailSummary/
+*.log
+.coverage
+
+# Local tooling / VCS / caches
+.git
+.gitignore
+.venv/
+__pycache__/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+mailmatrixai.egg-info/
+.idea/
+.claude/
+.DS_Store
+**/.DS_Store
+
+# Not needed in the server image
+electron/
+docker/
+tests/
+seed_dovecot.py
+TODO.md
+uv.lock

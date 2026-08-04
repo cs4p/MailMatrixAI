@@ -1,0 +1,32 @@
+# OPTIONAL. The app has NO built-in authentication — anyone who can reach it
+# can read and send your mail. Only expose it behind an authenticating proxy
+# (e.g. oauth2-proxy, Cloudflare Access, or basic-auth on the ingress) and TLS.
+# If you skip this file, reach the app with `kubectl port-forward` instead.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: mailmatrixai
+  labels:
+    app: mailmatrixai
+  annotations:
+    # Example: nginx basic-auth. Create the secret first:
+    #   htpasswd -c auth <user> && kubectl create secret generic mailmatrixai-basic-auth --from-file=auth
+    nginx.ingress.kubernetes.io/auth-type: basic
+    nginx.ingress.kubernetes.io/auth-secret: mailmatrixai-basic-auth
+    nginx.ingress.kubernetes.io/auth-realm: "MailMatrixAI"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: ["mail.example.com"]
+      secretName: mailmatrixai-tls
+  rules:
+    - host: mail.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: mailmatrixai
+                port:
+                  number: 80
