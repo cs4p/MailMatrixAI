@@ -485,6 +485,107 @@ def save_rules_file(path: Union[str, Path], data: dict) -> None:
             json.dump(data, f, indent=2, ensure_ascii=False)
 
 
+def validate_rules_document(data) -> Optional[str]:
+    """Validate an uploaded rules document against emailRules.schema.json's shape.
+
+    Returns None if the document is well-formed, otherwise a human-readable error
+    string. Structure is enforced strictly (so a malformed upload is rejected
+    whole rather than half-merged); individual addresses/domains are *not* checked
+    here — merge_rules skips invalid ones and reports them.
+    """
+    if not isinstance(data, dict):
+        return "Root of the rules file must be a JSON object."
+    labels = data.get("labels")
+    if not isinstance(labels, list):
+        return 'Rules file must have a "labels" array.'
+    for i, entry in enumerate(labels):
+        if not isinstance(entry, dict):
+            return f"labels[{i}] must be an object."
+        name = entry.get("labelName")
+        if not isinstance(name, str) or not name.strip():
+            return f'labels[{i}] is missing a "labelName" string.'
+        if not validate_label(full_label_name(name)):
+            return f'labels[{i}]: invalid labelName "{name}".'
+        for key in ("emailAddresses", "emailDomains"):
+            if key in entry and entry[key] is not None:
+                if not isinstance(entry[key], list) or not all(isinstance(v, str) for v in entry[key]):
+                    return f'labels[{i}]: "{key}" must be an array of strings.'
+    return None
+
+
+def merge_rules(existing: dict, incoming: dict) -> dict:
+    """Merge `incoming` rules into `existing` in place, eliminating duplicates.
+
+    Labels are matched by their fully-qualified name (`full_label_name`, so a bare
+    "Work" merges into an existing "MailMatrixCategories/Work"). Addresses and
+    domains already present under a label are left untouched; only new, valid
+    entries are appended. Invalid addresses/domains are skipped and counted.
+
+    Returns a summary dict describing what was imported. Callers hold rules_lock
+    around the surrounding read-merge-write.
+    """
+    by_name = {entry["labelName"]: entry for entry in existing.setdefault("labels", [])}
+
+    summary = {
+        "labels_created": [],
+        "labels_updated": [],
+        "addresses_added": 0,
+        "addresses_skipped_duplicate": 0,
+        "addresses_skipped_invalid": 0,
+        "domains_added": 0,
+        "domains_skipped_duplicate": 0,
+        "domains_skipped_invalid": 0,
+    }
+    updated = set()
+
+    for src in incoming.get("labels", []):
+        label = full_label_name(src["labelName"].strip())
+        entry = by_name.get(label)
+        if entry is None:
+            entry = {"labelName": label, "emailAddresses": [], "emailDomains": []}
+            existing["labels"].append(entry)
+            by_name[label] = entry
+            summary["labels_created"].append(label)
+
+        addrs = entry.setdefault("emailAddresses", [])
+        existing_addrs = set(addrs)
+        added_here = False
+        for addr in src.get("emailAddresses") or []:
+            addr = addr.strip()
+            if not validate_email_address(addr):
+                summary["addresses_skipped_invalid"] += 1
+            elif addr in existing_addrs:
+                summary["addresses_skipped_duplicate"] += 1
+            else:
+                addrs.append(addr)
+                existing_addrs.add(addr)
+                summary["addresses_added"] += 1
+                added_here = True
+
+        domains = entry.setdefault("emailDomains", [])
+        existing_domains = set(domains)
+        for domain in src.get("emailDomains") or []:
+            domain = domain.strip().lower()
+            if not domain or "@" in domain or any(c in domain for c in '"\\\r\n') or "." not in domain:
+                summary["domains_skipped_invalid"] += 1
+            elif domain in existing_domains:
+                summary["domains_skipped_duplicate"] += 1
+            else:
+                domains.append(domain)
+                existing_domains.add(domain)
+                summary["domains_added"] += 1
+                added_here = True
+
+        if added_here:
+            addrs.sort()
+            domains.sort()
+            if label not in summary["labels_created"]:
+                updated.add(label)
+
+    summary["labels_updated"] = sorted(updated)
+    return summary
+
+
 def summary_files(summary_dir: Union[str, Path]) -> List[dict]:
     """List saved email_summary_*.html reports, newest first.
 

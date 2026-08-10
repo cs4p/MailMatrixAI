@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import re
@@ -39,6 +40,7 @@ from commonFunctions import (
     imap_call as _imap_call,
     list_folders,
     load_rules_file,
+    merge_rules,
     move_imap_messages,
     move_message_uid,
     parse_headers,
@@ -54,6 +56,7 @@ from commonFunctions import (
     validate_folder,
     validate_new_folder_name,
     validate_label,
+    validate_rules_document,
 )
 
 load_dotenv()  # kept for .env → Keychain migration only (see _migrate_env_to_keychain)
@@ -444,6 +447,42 @@ def api_rules_convert_domain():
     log.info("Domain rule created: *@%s → %s%s", domain, full_label,
               " (purged other-label rules for this domain)" if purge_other_labels else "")
     return jsonify({"ok": True})
+
+
+# Guard against oversized uploads exhausting memory; a rules file is small JSON.
+_RULES_IMPORT_MAX_BYTES = 5 * 1024 * 1024
+
+
+@app.route("/api/rules/import", methods=["POST"])
+def api_rules_import():
+    upload = request.files.get("file")
+    if upload is None or not upload.filename:
+        return jsonify({"ok": False, "error": "No file uploaded"}), 400
+
+    raw = upload.read(_RULES_IMPORT_MAX_BYTES + 1)
+    if len(raw) > _RULES_IMPORT_MAX_BYTES:
+        return jsonify({"ok": False, "error": "File too large (max 5 MB)"}), 400
+
+    try:
+        incoming = json.loads(raw.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        return jsonify({"ok": False, "error": f"Not valid JSON: {exc}"}), 400
+
+    error = validate_rules_document(incoming)
+    if error:
+        return jsonify({"ok": False, "error": error}), 400
+
+    data = _load_rules()
+    summary = merge_rules(data, incoming)
+    _save_rules(data)
+
+    log.info(
+        "Rules imported from %s: +%d addresses, +%d domains across %d new / %d updated labels",
+        upload.filename,
+        summary["addresses_added"], summary["domains_added"],
+        len(summary["labels_created"]), len(summary["labels_updated"]),
+    )
+    return jsonify({"ok": True, "summary": summary})
 
 
 @app.route("/inbox")

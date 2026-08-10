@@ -2,9 +2,15 @@
 {% block title %}Email Rules — MailMatrix AI{% endblock %}
 
 {% block content %}
-<div class="page-header">
-  <h1>Email Rules</h1>
-  <p class="page-subtitle">{{ total_senders }} sender(s) and {{ total_domain_rules }} domain rule(s) across {{ label_names|length }} labels</p>
+<div class="page-header page-header-row">
+  <div>
+    <h1>Email Rules</h1>
+    <p class="page-subtitle">{{ total_senders }} sender(s) and {{ total_domain_rules }} domain rule(s) across {{ label_names|length }} labels</p>
+  </div>
+  <div class="page-header-actions">
+    <button class="btn btn-secondary" onclick="document.getElementById('import-file').click()">Import Rules…</button>
+    <input type="file" id="import-file" accept=".json,application/json" style="display:none" onchange="importRules(this)">
+  </div>
 </div>
 
 <div class="rules-layout">
@@ -58,6 +64,20 @@
       <button class="btn btn-primary" id="modal-save" onclick="saveEdit()">Save &amp; Move Emails</button>
       <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
       <span class="modal-status" id="modal-status"></span>
+    </div>
+  </div>
+</div>
+
+<!-- Import summary modal -->
+<div id="import-modal" class="modal-overlay" onclick="if(event.target===this)closeImportModal()">
+  <div class="modal-card">
+    <div class="modal-header">
+      <h3 class="modal-title">Import Summary</h3>
+      <button class="modal-close" onclick="closeImportModal()">✕</button>
+    </div>
+    <div class="modal-body" id="import-summary-body"></div>
+    <div class="modal-footer">
+      <button class="btn btn-primary" onclick="closeImportModal()">Done</button>
     </div>
   </div>
 </div>
@@ -483,6 +503,56 @@
         } else {
           showToast('Error: ' + (data.error || 'Unknown'), 'error');
         }
+      })
+      .catch(() => showToast('Request failed', 'error'));
+  }
+
+  // ── Import rules ────────────────────────────────────────────────────────────
+  function closeImportModal() {
+    document.getElementById('import-modal').style.display = 'none';
+    // Reload so the merged rules render (GROUPS is baked server-side).
+    location.reload();
+  }
+
+  function importRules(input) {
+    const file = input.files && input.files[0];
+    input.value = '';  // allow re-selecting the same file later
+    if (!file) return;
+
+    const form = new FormData();
+    form.append('file', file);
+    showToast('Importing…', 'success');
+
+    fetch('/api/rules/import', {
+      method: 'POST',
+      headers: { 'X-Requested-With': 'XMLHttpRequest' },  // don't set Content-Type — let the browser add the multipart boundary
+      body: form,
+    })
+      .then(r => r.json().then(d => ({ ok: r.ok, d })))
+      .then(({ ok, d }) => {
+        if (!ok || !d.ok) {
+          showToast('Import failed: ' + (d.error || 'Unknown error'), 'error');
+          return;
+        }
+        const s = d.summary;
+        const rows = [
+          ['Labels created', s.labels_created.length],
+          ['Labels updated', s.labels_updated.length],
+          ['Addresses added', s.addresses_added],
+          ['Domains added', s.domains_added],
+          ['Duplicates skipped', s.addresses_skipped_duplicate + s.domains_skipped_duplicate],
+          ['Invalid entries skipped', s.addresses_skipped_invalid + s.domains_skipped_invalid],
+        ];
+        let html = '<ul class="import-summary-list">';
+        rows.forEach(([k, v]) => { html += `<li><span>${k}</span><strong>${v}</strong></li>`; });
+        html += '</ul>';
+        if (s.labels_created.length) {
+          html += '<div class="import-summary-detail"><div class="import-summary-detail-label">New labels</div>'
+            + s.labels_created.map(l => `<span class="label-chip">${l.replace('MailMatrixCategories/', '')}</span>`).join(' ')
+            + '</div>';
+        }
+        document.getElementById('import-summary-body').innerHTML = html;
+        document.getElementById('import-modal').style.display = 'flex';
       })
       .catch(() => showToast('Request failed', 'error'));
   }

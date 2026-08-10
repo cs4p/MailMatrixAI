@@ -90,6 +90,16 @@ a:hover { text-decoration: underline; }
 .page-header { margin-bottom: 2rem; }
 .page-header h1 { font-size: 1.75rem; font-weight: 700; letter-spacing: -.03em; }
 .page-subtitle { color: var(--text-secondary); font-size: .9375rem; margin-top: .25rem; }
+.page-header-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
+.page-header-actions { flex-shrink: 0; }
+
+/* Import summary modal */
+.import-summary-list { list-style: none; margin: 0; padding: 0; }
+.import-summary-list li { display: flex; justify-content: space-between; padding: .5rem 0; border-bottom: 1px solid rgba(0,0,0,.06); }
+.import-summary-list li:last-child { border-bottom: none; }
+.import-summary-list li span { color: var(--text-secondary); }
+.import-summary-detail { margin-top: 1rem; }
+.import-summary-detail-label { font-size: .8125rem; color: var(--text-secondary); margin-bottom: .5rem; }
 
 /* ── Cards ────────────────────────────────────────────────────────────────── */
 .card {
