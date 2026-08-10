@@ -8,3 +8,4 @@ emailSummary/
 .pytest_cache/
 electron/node_modules/
 electron/dist/
+k8s/secret.yaml

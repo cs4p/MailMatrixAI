@@ -1,0 +1,67 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mailmatrixai
+  labels:
+    app: mailmatrixai
+spec:
+  # Keep at 1: the app holds in-process caches/locks and its PVC is
+  # ReadWriteOnce, so it does not scale horizontally.
+  replicas: 1
+  strategy:
+    # Recreate (not RollingUpdate) so the old pod releases the RWO volume
+    # before the new pod tries to mount it.
+    type: Recreate
+  selector:
+    matchLabels:
+      app: mailmatrixai
+  template:
+    metadata:
+      labels:
+        app: mailmatrixai
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        # fsGroup makes the mounted volume group-owned by the app user so it
+        # can write emailRules.json / summaries.
+        fsGroup: 1000
+      containers:
+        - name: mailmatrixai
+          image: ghcr.io/cs4p/mailmatrixai:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 5000
+          envFrom:
+            - secretRef:
+                name: mailmatrixai-credentials
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: mailmatrixai-data

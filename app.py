@@ -93,8 +93,13 @@ def _log_exception(exc):
 
 
 BASE_DIR = Path(__file__).parent
-RULES_PATH = BASE_DIR / "emailRules.json"
-SUMMARY_DIR = BASE_DIR / "emailSummary"
+# Persistent state (learned filing rules + generated summaries) lives in DATA_DIR.
+# Defaults to the code directory so desktop/Electron/test runs are unchanged; set
+# MAILMATRIX_DATA_DIR to a mounted volume to relocate it (used by the container image).
+DATA_DIR = Path(os.environ.get("MAILMATRIX_DATA_DIR", BASE_DIR))
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+RULES_PATH = DATA_DIR / "emailRules.json"
+SUMMARY_DIR = DATA_DIR / "emailSummary"
 ENV_PATH = BASE_DIR / ".env"
 _sort_lock = threading.Lock()
 _CREDENTIAL_KEYS = {"IMAP_SERVER", "IMAP_PORT", "IMAP_USERNAME", "IMAP_PASSWORD",
