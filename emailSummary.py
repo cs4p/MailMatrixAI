@@ -359,9 +359,9 @@ Rules:
         ) as stream:
             response = stream.get_final_message()
     except anthropic.AuthenticationError:
-        log.error("Anthropic API key is invalid — check ANTHROPIC_API_KEY in macOS Keychain")
+        log.error("Anthropic API key is invalid — check ANTHROPIC_API_KEY (Keychain or environment)")
         return {'action_required': [], 'filing_suggestions': [],
-                '_error': 'Invalid API key — check ANTHROPIC_API_KEY in macOS Keychain'}
+                '_error': 'Invalid API key — check ANTHROPIC_API_KEY (Keychain or environment)'}
     except anthropic.RateLimitError as exc:
         retry_after = exc.response.headers.get("retry-after") if exc.response is not None else None
         if retry_after:

@@ -1,5 +1,6 @@
 import imaplib
 import json
+import os
 from datetime import date
 from unittest.mock import MagicMock, patch
 
@@ -887,6 +888,45 @@ def test_set_credential_updates_cache_immediately():
     assert commonFunctions.get_credential("IMAP_SERVER") == "first.example.com"
     commonFunctions.set_credential("IMAP_SERVER", "second.example.com")
     assert commonFunctions.get_credential("IMAP_SERVER") == "second.example.com"
+
+
+# ── keyring-unavailable fallback (Docker/K8s: no macOS Keychain) ───────────────
+
+def _raise_no_keyring(*_a, **_k):
+    import keyring.errors
+    raise keyring.errors.NoKeyringError("No recommended backend was available")
+
+
+def test_get_credential_falls_back_to_env_when_keyring_raises(monkeypatch):
+    # Simulate a headless container where keyring resolves to the fail backend.
+    monkeypatch.setattr("keyring.get_password", _raise_no_keyring)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-from-env")
+    commonFunctions._invalidate_credentials_cache()
+    # Must NOT raise NoKeyringError — the env var wins.
+    assert commonFunctions.get_credential("ANTHROPIC_API_KEY") == "sk-ant-from-env"
+
+
+def test_get_credential_returns_default_when_keyring_raises_and_env_unset(monkeypatch):
+    monkeypatch.setattr("keyring.get_password", _raise_no_keyring)
+    monkeypatch.delenv("SOME_MISSING_KEY", raising=False)
+    commonFunctions._invalidate_credentials_cache()
+    assert commonFunctions.get_credential("SOME_MISSING_KEY", "fallback") == "fallback"
+
+
+def test_credential_keys_in_keychain_empty_when_keyring_raises(monkeypatch):
+    monkeypatch.setattr("keyring.get_password", _raise_no_keyring)
+    commonFunctions._invalidate_credentials_cache()
+    assert commonFunctions.credential_keys_in_keychain() == set()
+
+
+def test_set_credential_does_not_raise_when_keyring_write_fails(monkeypatch):
+    monkeypatch.setattr("keyring.get_password", _raise_no_keyring)
+    monkeypatch.setattr("keyring.set_password", _raise_no_keyring)
+    commonFunctions._invalidate_credentials_cache()
+    # Should swallow the keyring error but keep env + in-process cache in sync.
+    commonFunctions.set_credential("IMAP_SERVER", "imap.container.com")
+    assert os.environ["IMAP_SERVER"] == "imap.container.com"
+    assert commonFunctions.get_credential("IMAP_SERVER") == "imap.container.com"
 
 
 # ── Mail-client helpers ───────────────────────────────────────────────────────

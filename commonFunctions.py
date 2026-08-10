@@ -47,13 +47,36 @@ _LIST_RE = re.compile(rb'\([^)]*\) "([^"]*)" "?([^"]*)"?')
 log = logging.getLogger(__name__)
 
 
+# In a headless Linux container (Docker/K8s) there is no macOS Keychain. The
+# image pins the null keyring backend so get_password() returns None and we fall
+# back to os.environ — but if keyring instead resolves to the `fail` backend (or
+# any backend that errors, e.g. SecretService with no D-Bus), get_password RAISES
+# NoKeyringError. Without this guard that exception propagates out of
+# get_credential() and the env-var fallback never runs — the app appears to be
+# "looking in the Keychain" even though the credentials are in the environment.
+# So treat any keyring failure as "no stored credentials" and let os.environ win.
+_keyring_warning_logged = False
+
+
+def _keyring_unavailable(exc: Exception) -> None:
+    global _keyring_warning_logged
+    if not _keyring_warning_logged:
+        log.warning("Keyring backend unavailable (%s) — reading credentials from "
+                    "environment variables instead", exc)
+        _keyring_warning_logged = True
+
+
 def _read_legacy_credential_items() -> dict:
     """Read values still stored under the old one-item-per-key scheme
     (pre-consolidation), without deleting anything.
     """
     legacy = {}
     for key in _LEGACY_CREDENTIAL_KEYS:
-        val = keyring.get_password(KEYCHAIN_SERVICE, key)
+        try:
+            val = keyring.get_password(KEYCHAIN_SERVICE, key)
+        except Exception as exc:  # no/failed keyring backend — fall back to env
+            _keyring_unavailable(exc)
+            return {}
         if val is not None:
             legacy[key] = val
     return legacy
@@ -74,7 +97,11 @@ def _invalidate_credentials_cache() -> None:
 
 
 def _load_credentials_uncached() -> dict:
-    raw = keyring.get_password(KEYCHAIN_SERVICE, _CREDENTIALS_ACCOUNT)
+    try:
+        raw = keyring.get_password(KEYCHAIN_SERVICE, _CREDENTIALS_ACCOUNT)
+    except Exception as exc:  # no/failed keyring backend — fall back to env
+        _keyring_unavailable(exc)
+        return {}
     if raw:
         try:
             return json.loads(raw)
@@ -83,16 +110,19 @@ def _load_credentials_uncached() -> dict:
 
     legacy = _read_legacy_credential_items()
     if legacy:
-        # Write the consolidated blob before removing the old items, so a
-        # failed write can't lose data.
-        keyring.set_password(KEYCHAIN_SERVICE, _CREDENTIALS_ACCOUNT, json.dumps(legacy))
-        for key in legacy:
-            try:
-                keyring.delete_password(KEYCHAIN_SERVICE, key)
-            except keyring.errors.KeyringError:
-                pass
-        log.info("Migrated %d credential(s) from per-key Keychain items into one blob",
-                 len(legacy))
+        try:
+            # Write the consolidated blob before removing the old items, so a
+            # failed write can't lose data.
+            keyring.set_password(KEYCHAIN_SERVICE, _CREDENTIALS_ACCOUNT, json.dumps(legacy))
+            for key in legacy:
+                try:
+                    keyring.delete_password(KEYCHAIN_SERVICE, key)
+                except keyring.errors.KeyringError:
+                    pass
+            log.info("Migrated %d credential(s) from per-key Keychain items into one blob",
+                     len(legacy))
+        except Exception as exc:  # migration is best-effort; still return what we read
+            _keyring_unavailable(exc)
     return legacy
 
 
@@ -117,11 +147,19 @@ def get_credential(key: str, default: str = "") -> str:
 
 
 def set_credential(key: str, value: str) -> None:
-    """Write a credential into the single macOS Keychain blob and keep os.environ in sync."""
+    """Write a credential into the single Keychain blob and keep os.environ in sync.
+
+    The Keychain write is best-effort: in a container with no usable keyring
+    backend it is skipped, but the in-process cache and os.environ are still
+    updated so the value is usable for the life of the process.
+    """
     global _creds_cache
     creds = _load_credentials()
     creds[key] = value
-    keyring.set_password(KEYCHAIN_SERVICE, _CREDENTIALS_ACCOUNT, json.dumps(creds))
+    try:
+        keyring.set_password(KEYCHAIN_SERVICE, _CREDENTIALS_ACCOUNT, json.dumps(creds))
+    except Exception as exc:  # no/failed keyring backend — env + cache still updated
+        _keyring_unavailable(exc)
     with _creds_cache_lock:
         _creds_cache = dict(creds)
     os.environ[key] = value
