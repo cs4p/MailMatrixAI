@@ -20,11 +20,13 @@ from commonFunctions import (
     get_all_labels,
     imap_call,
     imap_date,
+    merge_rules,
     move_imap_messages,
     parse_headers,
     resolve_duplicate_address,
     summary_files,
     update_sender_rule,
+    validate_rules_document,
 )
 
 
@@ -1290,3 +1292,95 @@ def test_folder_unread_counts_skips_folders_that_error():
     imap.status.side_effect = _status
     result = folder_unread_counts(imap, ["Good", "Bad"])
     assert result == {"Good": 2}
+
+
+# ── merge_rules / validate_rules_document ─────────────────────────────────────
+
+def test_merge_rules_into_empty():
+    existing = {"labels": []}
+    incoming = {"labels": [{
+        "labelName": "MailMatrixCategories/Work",
+        "emailAddresses": ["a@x.com", "b@x.com"],
+        "emailDomains": ["x.com"],
+    }]}
+    summary = merge_rules(existing, incoming)
+    assert summary["labels_created"] == ["MailMatrixCategories/Work"]
+    assert summary["addresses_added"] == 2
+    assert summary["domains_added"] == 1
+    entry = existing["labels"][0]
+    assert entry["emailAddresses"] == ["a@x.com", "b@x.com"]
+    assert entry["emailDomains"] == ["x.com"]
+
+
+def test_merge_rules_dedupes_existing():
+    existing = {"labels": [{
+        "labelName": "MailMatrixCategories/Work",
+        "emailAddresses": ["a@x.com"],
+        "emailDomains": ["x.com"],
+    }]}
+    incoming = {"labels": [{
+        "labelName": "MailMatrixCategories/Work",
+        "emailAddresses": ["a@x.com", "c@x.com"],
+        "emailDomains": ["x.com", "y.com"],
+    }]}
+    summary = merge_rules(existing, incoming)
+    assert summary["labels_created"] == []
+    assert summary["labels_updated"] == ["MailMatrixCategories/Work"]
+    assert summary["addresses_added"] == 1
+    assert summary["addresses_skipped_duplicate"] == 1
+    assert summary["domains_added"] == 1
+    assert summary["domains_skipped_duplicate"] == 1
+    entry = existing["labels"][0]
+    assert entry["emailAddresses"] == ["a@x.com", "c@x.com"]
+    assert entry["emailDomains"] == ["x.com", "y.com"]
+
+
+def test_merge_rules_bare_label_matches_qualified():
+    existing = {"labels": [{"labelName": "MailMatrixCategories/Work",
+                            "emailAddresses": [], "emailDomains": []}]}
+    merge_rules(existing, {"labels": [{"labelName": "Work", "emailAddresses": ["z@x.com"]}]})
+    assert len(existing["labels"]) == 1
+    assert existing["labels"][0]["emailAddresses"] == ["z@x.com"]
+
+
+def test_merge_rules_skips_invalid_entries():
+    existing = {"labels": []}
+    summary = merge_rules(existing, {"labels": [{
+        "labelName": "MailMatrixCategories/Work",
+        "emailAddresses": ["ok@x.com", "bad", 'q"@x.com'],
+        "emailDomains": ["good.com", "no-dot", "bad@domain.com"],
+    }]})
+    assert summary["addresses_added"] == 1
+    assert summary["addresses_skipped_invalid"] == 2
+    assert summary["domains_added"] == 1
+    assert summary["domains_skipped_invalid"] == 2
+
+
+def test_merge_rules_no_change_not_marked_updated():
+    existing = {"labels": [{"labelName": "MailMatrixCategories/Work",
+                            "emailAddresses": ["a@x.com"], "emailDomains": []}]}
+    summary = merge_rules(existing, {"labels": [{"labelName": "MailMatrixCategories/Work",
+                                                 "emailAddresses": ["a@x.com"]}]})
+    assert summary["labels_updated"] == []
+    assert summary["labels_created"] == []
+
+
+def test_validate_rules_document_accepts_valid():
+    assert validate_rules_document({"labels": [{"labelName": "MailMatrixCategories/Work"}]}) is None
+
+
+def test_validate_rules_document_rejects_non_dict():
+    assert validate_rules_document([]) is not None
+
+
+def test_validate_rules_document_rejects_missing_labels():
+    assert validate_rules_document({}) is not None
+
+
+def test_validate_rules_document_rejects_bad_label_entry():
+    assert validate_rules_document({"labels": [{"emailAddresses": []}]}) is not None
+
+
+def test_validate_rules_document_rejects_bad_address_list():
+    err = validate_rules_document({"labels": [{"labelName": "Work", "emailAddresses": "x@y.com"}]})
+    assert err is not None

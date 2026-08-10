@@ -1470,3 +1470,99 @@ def test_mail_unread_returns_counts_and_skips_noselect(client):
 def test_mail_unread_requires_credentials(client):
     with patch.dict(os.environ, {"IMAP_SERVER": "", "IMAP_USERNAME": "", "IMAP_PASSWORD": ""}):
         assert client.get("/api/mail/unread").status_code == 400
+
+
+# ── /api/rules/import ─────────────────────────────────────────────────────────
+
+def _upload(client, payload, filename="rules.json"):
+    """POST a rules document to the import endpoint as a multipart file."""
+    from io import BytesIO
+    raw = payload if isinstance(payload, (bytes, str)) else json.dumps(payload)
+    if isinstance(raw, str):
+        raw = raw.encode()
+    return client.post(
+        "/api/rules/import",
+        data={"file": (BytesIO(raw), filename)},
+        content_type="multipart/form-data",
+    )
+
+
+def test_rules_import_merges_and_dedupes(client):
+    incoming = {
+        "labels": [
+            {  # existing label, one new + one duplicate address
+                "labelName": "MailMatrixCategories/Work",
+                "emailAddresses": ["boss@work.com", "newhire@work.com"],
+                "emailDomains": [],
+            },
+            {  # brand-new label
+                "labelName": "MailMatrixCategories/News",
+                "emailAddresses": ["digest@news.com"],
+                "emailDomains": ["news.com"],
+            },
+        ]
+    }
+    resp = _upload(client, incoming)
+    data = resp.get_json()
+    assert data["ok"] is True
+    s = data["summary"]
+    assert s["labels_created"] == ["MailMatrixCategories/News"]
+    assert s["labels_updated"] == ["MailMatrixCategories/Work"]
+    assert s["addresses_added"] == 2  # newhire@work.com + digest@news.com
+    assert s["addresses_skipped_duplicate"] == 1  # boss@work.com
+    assert s["domains_added"] == 1  # news.com
+
+    rules = flask_app_module._load_rules()
+    work = next(e for e in rules["labels"] if e["labelName"] == "MailMatrixCategories/Work")
+    assert sorted(work["emailAddresses"]) == ["boss@work.com", "newhire@work.com"]
+    news = next(e for e in rules["labels"] if e["labelName"] == "MailMatrixCategories/News")
+    assert news["emailAddresses"] == ["digest@news.com"]
+    assert news["emailDomains"] == ["news.com"]
+
+
+def test_rules_import_bare_label_name_merges_into_qualified(client):
+    resp = _upload(client, {"labels": [{"labelName": "Work",
+                                        "emailAddresses": ["temp@work.com"]}]})
+    assert resp.get_json()["ok"] is True
+    rules = flask_app_module._load_rules()
+    work = next(e for e in rules["labels"] if e["labelName"] == "MailMatrixCategories/Work")
+    assert "temp@work.com" in work["emailAddresses"]
+    # No duplicate "Work" entry created
+    assert sum(1 for e in rules["labels"] if e["labelName"].endswith("/Work")) == 1
+
+
+def test_rules_import_skips_invalid_addresses(client):
+    resp = _upload(client, {"labels": [{"labelName": "MailMatrixCategories/Work",
+                                        "emailAddresses": ["good@x.com", "not-an-email", 'q"uote@x.com']}]})
+    s = resp.get_json()["summary"]
+    assert s["addresses_added"] == 1
+    assert s["addresses_skipped_invalid"] == 2
+
+
+def test_rules_import_rejects_bad_json(client):
+    resp = _upload(client, b"{not json")
+    assert resp.status_code == 400
+    assert "JSON" in resp.get_json()["error"]
+
+
+def test_rules_import_rejects_wrong_structure(client):
+    resp = _upload(client, {"labels": "nope"})
+    assert resp.status_code == 400
+    assert resp.get_json()["ok"] is False
+
+
+def test_rules_import_rejects_missing_file(client):
+    resp = client.post("/api/rules/import", data={}, content_type="multipart/form-data")
+    assert resp.status_code == 400
+    assert "No file" in resp.get_json()["error"]
+
+
+def test_rules_import_requires_csrf_header(client):
+    from io import BytesIO
+    resp = client.post(
+        "/api/rules/import",
+        data={"file": (BytesIO(b'{"labels": []}'), "rules.json")},
+        content_type="multipart/form-data",
+        headers={"X-Requested-With": ""},
+    )
+    assert resp.status_code == 403
