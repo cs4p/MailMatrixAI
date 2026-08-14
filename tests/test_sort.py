@@ -224,3 +224,30 @@ def test_main_exits_on_corrupt_rules_file(tmp_path, monkeypatch):
     with pytest.raises(SystemExit) as exc_info:
         sortEmail.main()
     assert exc_info.value.code == 1
+
+
+def test_main_resolves_rules_path_from_data_dir(tmp_path, monkeypatch):
+    # Issue #13: with RULES_PATH unset, the CLI must read
+    # ${MAILMATRIX_DATA_DIR}/emailRules.json (matching app.py), not a bare
+    # relative "emailRules.json" resolved against the working dir.
+    from unittest.mock import MagicMock
+    import sortEmail
+
+    monkeypatch.delenv("RULES_PATH", raising=False)
+    monkeypatch.setenv("MAILMATRIX_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("IMAP_SERVER", "imap.test.com")
+    monkeypatch.setenv("IMAP_USERNAME", "u")
+    monkeypatch.setenv("IMAP_PASSWORD", "p")
+
+    captured = {}
+
+    def _fake_load(path):
+        captured["path"] = path
+        return {}, {}
+
+    monkeypatch.setattr(sortEmail, "load_rules", _fake_load)
+    monkeypatch.setattr(sortEmail, "connect_to_imap", lambda *a, **k: MagicMock())
+    monkeypatch.setattr(sortEmail, "sort_inbox", lambda *a, **k: None)
+
+    sortEmail.main()
+    assert captured["path"] == str(tmp_path / "emailRules.json")

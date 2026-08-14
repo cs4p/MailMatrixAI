@@ -283,6 +283,13 @@ def api_inbox_stats():
     return jsonify({"inbox_count": count, "connected": count >= 0})
 
 
+def _child_env() -> dict:
+    """Environment for the CLI subprocesses: pass the UI's already-resolved
+    RULES_PATH so the child reads the exact same file, even when the working
+    dir differs from MAILMATRIX_DATA_DIR (e.g. a container with WORKDIR /app)."""
+    return {**os.environ, "RULES_PATH": str(RULES_PATH)}
+
+
 @app.route("/api/sort", methods=["POST"])
 def api_sort():
     log.info("Sort inbox triggered")
@@ -290,7 +297,7 @@ def api_sort():
     with _sort_lock:
         result = subprocess.run(
             [sys.executable, str(BASE_DIR / "sortEmail.py")],
-            capture_output=True, text=True, timeout=120,
+            capture_output=True, text=True, timeout=120, env=_child_env(),
         )
     elapsed = time.monotonic() - t0
     if result.returncode == 0:
@@ -317,7 +324,7 @@ def api_generate_summary():
 
     log.info("Summary generation triggered for %s", target_date or "today")
     t0 = time.monotonic()
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300, env=_child_env())
     elapsed = time.monotonic() - t0
 
     if result.returncode == 0:

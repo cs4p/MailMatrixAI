@@ -220,6 +220,20 @@ def test_api_sort_success(client):
     assert data["ok"] is True
 
 
+def test_api_sort_passes_rules_path_to_child_env(client):
+    # Issue #13: the subprocess must inherit the UI's resolved RULES_PATH so it
+    # reads the same file even when the working dir differs from the data dir.
+    mock_result = MagicMock()
+    mock_result.returncode = 0
+    mock_result.stdout = mock_result.stderr = ""
+
+    with patch("app.subprocess.run", return_value=mock_result) as run:
+        client.post("/api/sort")
+
+    env = run.call_args.kwargs["env"]
+    assert env["RULES_PATH"] == str(flask_app_module.RULES_PATH)
+
+
 def test_api_sort_failure(client):
     mock_result = MagicMock()
     mock_result.returncode = 1
@@ -253,6 +267,19 @@ def test_api_generate_summary_success(client):
     data = resp.get_json()
     assert data["ok"] is True
     assert data["filename"] == "email_summary_2026-06-28.html"
+
+
+def test_api_generate_summary_passes_rules_path_to_child_env(client):
+    mock_result = MagicMock()
+    mock_result.returncode = 0
+    mock_result.stdout = mock_result.stderr = ""
+
+    with patch("app.subprocess.run", return_value=mock_result) as run:
+        client.post("/api/generate-summary",
+                    data=json.dumps({}), content_type="application/json")
+
+    env = run.call_args.kwargs["env"]
+    assert env["RULES_PATH"] == str(flask_app_module.RULES_PATH)
 
 
 def test_api_generate_summary_invalid_date(client):
@@ -1318,6 +1345,7 @@ def test_mail_attachment_bad_part_404(client):
 def _move_imap():
     imap = MagicMock()
     imap.select.return_value = ("OK", [b"1"])
+    imap.create.return_value = ("OK", [b"CREATE completed"])
     imap.logout.return_value = ("BYE", [b""])
 
     def _uid(cmd, *args):
@@ -1360,6 +1388,7 @@ def test_mail_move_to_category_creates_rule(client):
 def test_mail_move_copy_failure_leaves_message(client):
     imap = MagicMock()
     imap.select.return_value = ("OK", [b"1"])
+    imap.create.return_value = ("OK", [b"CREATE completed"])
     imap.logout.return_value = ("BYE", [b""])
 
     def _uid(cmd, *args):

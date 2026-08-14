@@ -17,6 +17,8 @@ from commonFunctions import (
 
 log = logging.getLogger(__name__)
 
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
 
 def load_rules(path: str = "emailRules.json") -> Tuple[Dict[str, List[str]], Dict[str, List[str]]]:
     with open(path, 'r', encoding='utf-8') as f:
@@ -132,7 +134,13 @@ def main() -> None:
     imap_port = int(get_credential("IMAP_PORT", "993"))
     username = get_credential("IMAP_USERNAME")
     password = get_credential("IMAP_PASSWORD")
-    rules_path = os.environ.get("RULES_PATH", "emailRules.json")
+    # Default the rules path to MAILMATRIX_DATA_DIR (like app.py / emailSummary.py)
+    # so the CLI reads the same file the web UI writes when the data dir differs
+    # from the working dir (e.g. a container with MAILMATRIX_DATA_DIR=/data).
+    rules_path = os.environ.get(
+        "RULES_PATH",
+        os.path.join(os.environ.get("MAILMATRIX_DATA_DIR", _SCRIPT_DIR), "emailRules.json"),
+    )
     if not (imap_server and username and password):
         log.error("IMAP credentials not configured — set them via the web UI Config page")
         sys.exit(1)

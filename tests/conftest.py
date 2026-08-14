@@ -56,6 +56,7 @@ def mock_imap():
     imap.search.return_value = ("OK", [b""])
     imap.fetch.return_value = ("OK", [(b"", b""), b")"])
     imap.copy.return_value = ("OK", None)
+    imap.create.return_value = ("OK", [b"CREATE completed"])
     imap.store.return_value = ("OK", [None])
     imap.expunge.return_value = ("OK", None)
     imap.logout.return_value = ("BYE", [b"Logging out"])
