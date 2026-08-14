@@ -1200,6 +1200,7 @@ def test_get_attachment_sanitizes_traversal_filename():
 def _move_imap(copy_result=("OK", None), expunge_uid_result=("OK", None)):
     imap = MagicMock()
     imap.select.return_value = ("OK", [b"3"])
+    imap.create.return_value = ("OK", [b"CREATE completed"])
 
     def _uid(cmd, *args):
         if cmd == "FETCH":
@@ -1253,6 +1254,15 @@ def test_move_message_uid_missing_message():
     result = move_message_uid(imap, "INBOX", "5", "Archive")
     assert result["ok"] is False
     assert result["error"] == "Message not found"
+
+
+def test_move_message_uid_creates_target_before_copy():
+    # Issue #14 (mail-client parallel): dragging into a brand-new folder must
+    # CREATE it — COPY won't auto-create the destination.
+    imap = _move_imap()
+    result = move_message_uid(imap, "INBOX", "5", "MailMatrixCategories/New")
+    assert result["ok"] is True
+    imap.create.assert_called_once_with('"MailMatrixCategories/New"')
 
 
 # add_sender_to_label_rule

@@ -18,6 +18,7 @@ from commonFunctions import (
     add_sender_to_label_rule,
     connect_to_imap,
     decode_header_value,
+    ensure_mailbox,
     extract_body_snippet,
     extract_email_address,
     fetch_many,
@@ -585,6 +586,9 @@ def accept_filing(
         imap = connect_to_imap(imap_server, username, password, imap_port)
         try:
             imap_call(lambda: imap.select('INBOX'))
+            # Accepting a suggestion for a brand-new category: COPY won't create
+            # the mailbox, so create it first (no-op if it already exists).
+            ensure_mailbox(imap, label)
             status, messages = imap_call(lambda: imap.search(None, f'FROM "{from_addr}"'))
             msg_ids = messages[0].split() if status == 'OK' else []
 

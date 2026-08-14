@@ -1196,6 +1196,22 @@ def get_attachment(raw: bytes, part_index: int) -> Optional[Tuple[str, str, byte
     return None
 
 
+def ensure_mailbox(imap, folder: str) -> None:
+    """Create `folder` if it doesn't already exist.
+
+    IMAP COPY/APPEND will not auto-create a missing destination mailbox — Cyrus
+    (Fastmail) answers NO — so filing into a brand-new label fails unless the
+    mailbox is created first. Safe to call unconditionally: a NO because the
+    mailbox already exists is the expected case and is ignored (this also makes
+    it robust to a client having deleted the folder). Callers must pass an
+    already-validated name (validate_label / validate_folder) since it is quoted
+    straight into the IMAP command.
+    """
+    status, _ = imap_call(lambda: imap.create(f'"{folder}"'))
+    if status != 'OK':
+        log.debug("CREATE %s answered non-OK (already exists?) — continuing", folder)
+
+
 def move_message_uid(imap, source_folder: str, uid: str, target_folder: str) -> dict:
     """Move one message (by UID) between folders on an already-connected client.
 
@@ -1223,6 +1239,9 @@ def move_message_uid(imap, source_folder: str, uid: str, target_folder: str) -> 
     if not found:
         return {'ok': False, 'from_addr': '', 'error': 'Message not found'}
 
+    # COPY won't auto-create the target — ensure it exists (e.g. dragging into a
+    # brand-new MailMatrixCategories/* folder).
+    ensure_mailbox(imap, target_folder)
     st, _ = imap_call(lambda: imap.uid('COPY', uid, f'"{target_folder}"'))
     if st != 'OK':
         # Never delete the original unless the copy actually succeeded.

@@ -483,6 +483,46 @@ def test_accept_filing_creates_new_label_entry(mock_imap, tmp_path):
     assert "promo@newsletter.com" in updated["labels"][0]["emailAddresses"]
 
 
+def test_accept_filing_creates_missing_mailbox(mock_imap, tmp_path):
+    # Issue #14: accepting a brand-new category must CREATE the mailbox first,
+    # since IMAP COPY will not auto-create it (Fastmail/Cyrus answers NO).
+    rules_file = tmp_path / "emailRules.json"
+    rules_file.write_text(json.dumps({"labels": []}))
+    mock_imap.search.return_value = ("OK", [b"1"])
+
+    with patch("emailSummary.connect_to_imap", return_value=mock_imap):
+        result = accept_filing(
+            body={"from_addr": "doc@clinic.com", "label": "MailMatrixCategories/Medical"},
+            imap_server="imap.example.com", imap_port=993,
+            username="u", password="p",
+            rules_path=str(rules_file),
+        )
+
+    assert result["ok"] is True
+    assert result["moved"] == 1
+    mock_imap.create.assert_called_once_with('"MailMatrixCategories/Medical"')
+    mock_imap.copy.assert_called()
+
+
+def test_accept_filing_proceeds_when_mailbox_already_exists(mock_imap, tmp_path):
+    # CREATE on an existing mailbox returns NO — that must be tolerated, not fatal.
+    rules_file = tmp_path / "emailRules.json"
+    rules_file.write_text(json.dumps({"labels": []}))
+    mock_imap.search.return_value = ("OK", [b"1"])
+    mock_imap.create.return_value = ("NO", [b"[ALREADYEXISTS] Mailbox already exists"])
+
+    with patch("emailSummary.connect_to_imap", return_value=mock_imap):
+        result = accept_filing(
+            body={"from_addr": "doc@clinic.com", "label": "MailMatrixCategories/Medical"},
+            imap_server="imap.example.com", imap_port=993,
+            username="u", password="p",
+            rules_path=str(rules_file),
+        )
+
+    assert result["ok"] is True
+    assert result["moved"] == 1
+
+
 def test_accept_filing_no_messages_to_move(mock_imap, tmp_path):
     rules_file = tmp_path / "emailRules.json"
     rules_file.write_text(json.dumps({"labels": []}))
