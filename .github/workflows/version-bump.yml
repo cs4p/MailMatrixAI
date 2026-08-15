@@ -7,17 +7,23 @@ name: Bump version on merge to main
 #   - "#minor" in the head commit message  -> minor bump
 #   - "#major" in the head commit message  -> major bump
 #
-# Loop safety: the bump is committed with the default GITHUB_TOKEN, and pushes
-# made with that token do NOT trigger new workflow runs — so this can never
-# retrigger itself. The "[skip version]" marker on the bump commit is a
-# belt-and-suspenders guard in case the token is ever swapped for a PAT.
+# The bump commit + tag are pushed with a PAT (secrets.RELEASE_PAT), NOT the
+# built-in GITHUB_TOKEN. This is deliberate: GITHUB_TOKEN pushes do not trigger
+# other workflows, but we WANT the vX.Y.Z tag push to trigger docker-publish.yml
+# so semver-tagged container images get built.
+#
+# Loop safety: because the PAT's push DOES trigger workflows, this workflow would
+# retrigger on its own bump commit — so the "[skip version]" marker on that
+# commit + the job-level `if` below are load-bearing, not optional. (The tag push
+# targets refs/tags/*, which this workflow's `branches: [main]` filter ignores,
+# so the tag never retriggers a bump either.)
 
 on:
   push:
     branches: [main]
 
 permissions:
-  contents: write        # push the bump commit + tag (repo default token is read-only)
+  contents: write        # PAT does the push; this is a belt-and-suspenders default
 
 concurrency:
   group: version-bump    # serialize bumps so two rapid merges can't race the push
@@ -33,7 +39,8 @@ jobs:
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          # PAT so the tag push triggers docker-publish.yml (GITHUB_TOKEN wouldn't).
+          token: ${{ secrets.RELEASE_PAT }}
 
       - name: Determine bump level
         id: level
