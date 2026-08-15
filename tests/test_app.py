@@ -147,13 +147,15 @@ def test_summaries_page_shows_stats_from_sidecar(client):
 
 
 def test_summaries_page_omits_stats_without_sidecar(client):
+    # The stat + run-time containers are always in the DOM (so the refresh JS
+    # can populate them in place) but stay hidden until a sidecar exists.
     summary_dir = flask_app_module.SUMMARY_DIR
     (summary_dir / "email_summary_2026-07-16.html").write_text("<html></html>")
 
     resp = client.get("/summaries")
     html = resp.data.decode()
-    assert "summary-stats" not in html
-    assert "summary-generated-at" not in html
+    assert 'class="summary-stats" hidden' in html
+    assert 'class="summary-generated-at" hidden' in html
 
 
 def test_rules_page_returns_200(client):
@@ -308,6 +310,66 @@ def test_api_generate_summary_no_date_uses_today(client):
     call_args = mock_run.call_args[0][0]
     assert "--no-serve" in call_args
     assert not any(re.match(r'\d{4}-\d{2}-\d{2}$', str(a)) for a in call_args)
+
+
+def test_api_generate_summary_echoes_sidecar_meta(client):
+    # The refreshed sidecar (normally written by the subprocess) is seeded here
+    # so the endpoint can read it back and echo the counts to the caller.
+    summary_dir = flask_app_module.SUMMARY_DIR
+    (summary_dir / "email_summary_2026-06-28.html").write_text("<html></html>")
+    (summary_dir / "email_summary_2026-06-28.json").write_text(json.dumps({
+        "processed": 11, "need_attention": 2, "unfiled": 4, "filed": 7,
+        "generated_at": "2026-06-28T08:30:00",
+    }))
+
+    mock_result = MagicMock()
+    mock_result.returncode = 0
+    mock_result.stdout = mock_result.stderr = ""
+
+    with patch("app.subprocess.run", return_value=mock_result):
+        resp = client.post(
+            "/api/generate-summary",
+            data=json.dumps({"date": "2026-06-28"}),
+            content_type="application/json",
+        )
+
+    data = resp.get_json()
+    assert data["ok"] is True
+    assert data["processed"] == 11
+    assert data["need_attention"] == 2
+    assert data["unfiled"] == 4
+    assert data["filed"] == 7
+    assert data["generated_at"] == "Jun 28, 2026 at 08:30 AM"
+
+
+# ── /api/summaries/unfiled-dates ──────────────────────────────────────────────
+
+def test_api_summaries_unfiled_dates_returns_only_unfiled_newest_first(client):
+    summary_dir = flask_app_module.SUMMARY_DIR
+    for date_str, unfiled in [("2026-07-10", 3), ("2026-07-11", 0), ("2026-07-12", 5)]:
+        (summary_dir / f"email_summary_{date_str}.html").write_text("<html></html>")
+        (summary_dir / f"email_summary_{date_str}.json").write_text(
+            json.dumps({"processed": 1, "unfiled": unfiled})
+        )
+    # A report with no sidecar at all — no unfiled count, so excluded.
+    (summary_dir / "email_summary_2026-07-13.html").write_text("<html></html>")
+
+    resp = client.get("/api/summaries/unfiled-dates")
+    assert resp.status_code == 200
+    assert resp.get_json()["dates"] == ["2026-07-12", "2026-07-10"]
+
+
+def test_summaries_page_renders_refresh_controls(client):
+    summary_dir = flask_app_module.SUMMARY_DIR
+    (summary_dir / "email_summary_2026-07-16.html").write_text("<html></html>")
+    (summary_dir / "email_summary_2026-07-16.json").write_text(json.dumps({
+        "processed": 1, "need_attention": 0, "unfiled": 2, "filed": 1,
+    }))
+
+    html = client.get("/summaries").data.decode()
+    assert 'class="summary-refresh"' in html
+    assert 'id="refresh-unfiled"' in html
+    assert 'data-date="2026-07-16"' in html
 
 
 # ── /api/rules/delete ─────────────────────────────────────────────────────────
