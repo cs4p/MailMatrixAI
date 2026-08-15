@@ -152,6 +152,26 @@ python -m pytest
 
 256 tests. IMAP, the Anthropic API, and the macOS Keychain are fully stubbed — no network or Keychain access during tests.
 
+## Versioning
+
+Every merge to `main` is versioned automatically by
+[`.github/workflows/version-bump.yml`](.github/workflows/version-bump.yml): it
+bumps the version in `pyproject.toml` and `electron/package.json` (kept in sync)
+and pushes a matching `vX.Y.Z` tag. The bump level comes from the merge commit
+message:
+
+- default → **patch** (`0.4.0` → `0.4.1`)
+- contains `#minor` → **minor** (`0.4.0` → `0.5.0`)
+- contains `#major` → **major** (`0.4.0` → `1.0.0`)
+
+The bump commit is made with the built-in `GITHUB_TOKEN`, whose pushes don't
+retrigger workflows, so it can't loop. Because of that same rule, the tag it
+pushes does **not** trigger the container build in `docker-publish.yml`; the
+merge that preceded the bump already built and pushed the `latest`/`main`/`sha`
+images. To also auto-build semver-tagged images (`0.5.0`, `0.5`) from the bot
+tag, run the bump workflow's checkout/push with a Personal Access Token secret
+instead of `GITHUB_TOKEN`.
+
 ## Project structure
 
 ```

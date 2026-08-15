@@ -1,0 +1,96 @@
+name: Bump version on merge to main
+
+# On every push to main (a merged PR or a direct commit), bump the project
+# version in pyproject.toml + electron/package.json and push a matching
+# vX.Y.Z tag. Level:
+#   - patch by default
+#   - "#minor" in the head commit message  -> minor bump
+#   - "#major" in the head commit message  -> major bump
+#
+# Loop safety: the bump is committed with the default GITHUB_TOKEN, and pushes
+# made with that token do NOT trigger new workflow runs — so this can never
+# retrigger itself. The "[skip version]" marker on the bump commit is a
+# belt-and-suspenders guard in case the token is ever swapped for a PAT.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write        # push the bump commit + tag (repo default token is read-only)
+
+concurrency:
+  group: version-bump    # serialize bumps so two rapid merges can't race the push
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    # Never run on our own bump commits.
+    if: ${{ !contains(github.event.head_commit.message, '[skip version]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Determine bump level
+        id: level
+        env:
+          MSG: ${{ github.event.head_commit.message }}
+        run: |
+          level=patch
+          if printf '%s' "$MSG" | grep -qiE '#major'; then
+            level=major
+          elif printf '%s' "$MSG" | grep -qiE '#minor'; then
+            level=minor
+          fi
+          echo "level=$level" >> "$GITHUB_OUTPUT"
+          echo "Bump level: $level"
+
+      - name: Compute new version
+        id: ver
+        run: |
+          current=$(grep -m1 -E '^version = "' pyproject.toml | sed -E 's/version = "([^"]+)"/\1/')
+          IFS='.' read -r major minor patch <<< "$current"
+          case "${{ steps.level.outputs.level }}" in
+            major) major=$((major + 1)); minor=0; patch=0 ;;
+            minor) minor=$((minor + 1)); patch=0 ;;
+            patch) patch=$((patch + 1)) ;;
+          esac
+          new="$major.$minor.$patch"
+          echo "current=$current" >> "$GITHUB_OUTPUT"
+          echo "new=$new" >> "$GITHUB_OUTPUT"
+          echo "Bumping $current -> $new"
+
+      - name: Apply version bump
+        env:
+          CURRENT: ${{ steps.ver.outputs.current }}
+          NEW: ${{ steps.ver.outputs.new }}
+        run: |
+          # Match the exact current version string so replacement is unambiguous
+          # and single (no GNU-only "0,/re/" addressing — portable sed).
+          # pyproject.toml: the [project] version line.
+          sed -i "s|^version = \"$CURRENT\"|version = \"$NEW\"|" pyproject.toml
+          # electron/package.json: the top-level "version" field (devDependencies
+          # have "electron"/"electron-builder" keys, not "version").
+          sed -i "s|\"version\": \"$CURRENT\"|\"version\": \"$NEW\"|" electron/package.json
+          # Fail loudly if either file wasn't actually updated.
+          grep -q "^version = \"$NEW\"" pyproject.toml || { echo "::error::pyproject.toml not updated"; exit 1; }
+          grep -q "\"version\": \"$NEW\"" electron/package.json || { echo "::error::electron/package.json not updated"; exit 1; }
+          echo "pyproject.toml -> $(grep -m1 -E '^version = ' pyproject.toml)"
+          echo "package.json  -> $(grep -m1 -E '\"version\":' electron/package.json)"
+
+      - name: Commit, tag, and push
+        env:
+          NEW: ${{ steps.ver.outputs.new }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add pyproject.toml electron/package.json
+          git commit -m "chore: bump version to $NEW [skip version]"
+          git tag "v$NEW"
+          git push origin HEAD:main
+          git push origin "v$NEW"
+          echo "Pushed bump commit and tag v$NEW"
