@@ -22,7 +22,7 @@ jobs:
       packages: write        # required to push to GHCR
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # Repository names can contain uppercase; GHCR paths must be lowercase.
       - name: Compute lowercase image name
