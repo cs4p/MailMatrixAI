@@ -367,7 +367,9 @@
     const h = m.headers;
     document.getElementById('reading-empty').style.display = 'none';
     const content = document.getElementById('reading-content');
-    content.style.display = 'block';
+    // 'flex' (not 'block') so the CSS flex-column layout applies and
+    // #mail-body-container / the message iframe stretch to fill the pane.
+    content.style.display = 'flex';
 
     const moveOptions = FOLDERS
       .filter(f => f.selectable && f.name !== m.folder)

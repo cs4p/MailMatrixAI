@@ -1147,6 +1147,15 @@ def test_mail_page_renders(client):
     assert b"mail-layout" in resp.data
 
 
+def test_mail_reading_content_uses_flex_display(client):
+    # The reading pane must be shown as a flex column (not block) so
+    # #mail-body-container and the message iframe stretch to fill the pane.
+    with _mail_env_patch():
+        resp = client.get("/mail")
+    assert b"content.style.display = 'flex'" in resp.data
+    assert b"content.style.display = 'block'" not in resp.data
+
+
 def test_mail_folders_lists_and_marks_noselect(client):
     flask_app_module._invalidate_folders_cache()
     with _mail_env_patch(), patch("app.connect_to_imap", return_value=_folders_imap()):
