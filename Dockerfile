@@ -1,6 +1,6 @@
 # MailMatrixAI web app — production container image.
 # Published to GHCR by .github/workflows/docker-publish.yml.
-FROM python:3.12-slim
+FROM python:3.14-slim
 
 # - PYTHON_KEYRING_BACKEND: the app reads credentials from the macOS Keychain on
 #   the desktop; in a Linux container there is no Keychain, so we pin the null
