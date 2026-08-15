@@ -368,6 +368,26 @@ a:hover { text-decoration: underline; }
 .summary-stat strong { color: var(--text); }
 .summary-filename { font-size: .75rem; color: var(--text-secondary); }
 .summary-arrow { position: absolute; top: 1.5rem; right: 1.5rem; color: var(--text-secondary); font-size: 1.1rem; }
+.summary-refresh {
+  position: absolute;
+  top: 1.3rem;
+  right: 3rem;
+  width: 1.6rem;
+  height: 1.6rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  color: var(--text-secondary);
+  font-size: 1.05rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: background .15s, color .15s;
+}
+.summary-refresh:hover { background: rgba(0,102,204,.12); color: var(--blue); }
+.summary-refresh.spinning { animation: summary-spin .8s linear infinite; color: var(--blue); }
+.summary-card.refreshing { opacity: .7; pointer-events: none; }
+@keyframes summary-spin { to { transform: rotate(360deg); } }
 
 /* ── Empty state ──────────────────────────────────────────────────────────── */
 .empty-state {

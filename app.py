@@ -331,9 +331,29 @@ def api_generate_summary():
         resolved_date = target_date or date.today().isoformat()
         filename = f"email_summary_{resolved_date}.html"
         log.info("Summary generated in %.1fs: %s", elapsed, filename)
-        return jsonify({"ok": True, "filename": filename})
+        resp = {"ok": True, "filename": filename}
+        # Echo the refreshed sidecar meta so callers (e.g. the Summaries page
+        # per-card refresh) can update a card in place without a full reload.
+        for entry in summary_files(SUMMARY_DIR):
+            if entry.get("date") == resolved_date:
+                for key in ("processed", "need_attention", "unfiled", "filed", "generated_at"):
+                    if key in entry:
+                        resp[key] = entry[key]
+                break
+        return jsonify(resp)
     log.error("Summary failed in %.1fs (exit=%d): %s", elapsed, result.returncode, result.stderr[-500:])
     return jsonify({"ok": False, "error": result.stderr[-2000:]}), 500
+
+
+@app.route("/api/summaries/unfiled-dates")
+def api_summaries_unfiled_dates():
+    """Dates (newest first) whose summary still has unfiled emails.
+
+    Drives the Summaries page "Refresh unfiled" button, which regenerates each
+    of these reports sequentially.
+    """
+    dates = [entry["date"] for entry in summary_files(SUMMARY_DIR) if entry.get("unfiled")]
+    return jsonify({"dates": dates})
 
 
 @app.route("/accept", methods=["POST"])

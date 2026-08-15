@@ -2,28 +2,36 @@
 {% block title %}Email Summaries — MailMatrix AI{% endblock %}
 
 {% block content %}
-<div class="page-header">
-  <h1>Email Summaries</h1>
-  <p class="page-subtitle">Daily AI-generated inbox reports</p>
+<div class="page-header page-header-row">
+  <div>
+    <h1>Email Summaries</h1>
+    <p class="page-subtitle">Daily AI-generated inbox reports</p>
+  </div>
+  {% if files %}
+  <div class="page-header-actions">
+    <button id="refresh-unfiled" class="btn btn-secondary" onclick="refreshUnfiled(this)">
+      <span class="btn-icon">↻</span> <span class="refresh-unfiled-label">Refresh unfiled</span>
+    </button>
+  </div>
+  {% endif %}
 </div>
 
 {% if files %}
 <div class="summary-grid">
   {% for f in files %}
-  <a class="summary-card" href="/summaries/{{ f.filename }}" target="_blank">
+  <a class="summary-card" data-date="{{ f.date }}" href="/summaries/{{ f.filename }}" target="_blank">
     <div class="summary-icon">✦</div>
     <div class="summary-label">{{ f.label }}</div>
-    {% if f.generated_at %}
-    <div class="summary-generated-at">Run {{ f.generated_at }}</div>
-    {% endif %}
-    {% if 'processed' in f %}
-    <div class="summary-stats">
-      <span class="summary-stat"><strong>{{ f.processed }}</strong> processed</span>
-      <span class="summary-stat"><strong>{{ f.need_attention }}</strong> need attention</span>
-      <span class="summary-stat"><strong>{{ f.unfiled }}</strong> unfiled</span>
+    <div class="summary-generated-at"{% if not f.generated_at %} hidden{% endif %}>Run {{ f.generated_at }}</div>
+    <div class="summary-stats"{% if 'processed' not in f %} hidden{% endif %}>
+      <span class="summary-stat"><strong class="stat-processed">{{ f.processed }}</strong> processed</span>
+      <span class="summary-stat"><strong class="stat-need-attention">{{ f.need_attention }}</strong> need attention</span>
+      <span class="summary-stat"><strong class="stat-unfiled">{{ f.unfiled }}</strong> unfiled</span>
     </div>
-    {% endif %}
     <div class="summary-filename">{{ f.filename }}</div>
+    <span class="summary-refresh" role="button" tabindex="0" title="Regenerate this day's report"
+          onclick="refreshSummary(event, this)"
+          onkeydown="if(event.key==='Enter'||event.key===' '){refreshSummary(event, this)}">↻</span>
     <div class="summary-arrow">→</div>
   </a>
   {% endfor %}
@@ -35,4 +43,91 @@
   <div class="empty-desc">Generate one from the <a href="/">Dashboard</a>.</div>
 </div>
 {% endif %}
+
+<div id="toast" class="toast" aria-live="polite"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Regenerate one day's report, then update its card in place.
+async function regenerateCard(card) {
+  const date = card.dataset.date;
+  const icon = card.querySelector('.summary-refresh');
+  if (icon) icon.classList.add('spinning');
+  card.classList.add('refreshing');
+  try {
+    const data = await postJSON('/api/generate-summary', { date });
+    if (!data.ok) {
+      showToast('Failed to refresh ' + date + ': ' + (data.error || 'error').slice(0, 120), 'error');
+      return false;
+    }
+    // Update stat counts + run time in place; fall back to a reload if the
+    // response is missing the sidecar meta (older backends).
+    if ('processed' in data) {
+      const stats = card.querySelector('.summary-stats');
+      card.querySelector('.stat-processed').textContent = data.processed;
+      card.querySelector('.stat-need-attention').textContent = data.need_attention;
+      card.querySelector('.stat-unfiled').textContent = data.unfiled;
+      if (stats) stats.hidden = false;
+    } else {
+      location.reload();
+      return true;
+    }
+    if (data.generated_at) {
+      const at = card.querySelector('.summary-generated-at');
+      if (at) { at.textContent = 'Run ' + data.generated_at; at.hidden = false; }
+    }
+    return true;
+  } catch (e) {
+    showToast('Failed to refresh ' + date, 'error');
+    return false;
+  } finally {
+    if (icon) icon.classList.remove('spinning');
+    card.classList.remove('refreshing');
+  }
+}
+
+// Per-card refresh icon — don't let the click navigate the card's anchor.
+function refreshSummary(event, el) {
+  event.preventDefault();
+  event.stopPropagation();
+  const card = el.closest('.summary-card');
+  if (card && !card.classList.contains('refreshing')) {
+    regenerateCard(card).then(ok => { if (ok) showToast('Summary refreshed', 'success'); });
+  }
+}
+
+// Header button — regenerate every summary that still has unfiled emails,
+// sequentially (each call is a synchronous IMAP + Anthropic subprocess).
+async function refreshUnfiled(btn) {
+  btn.disabled = true;
+  const label = btn.querySelector('.refresh-unfiled-label');
+  const original = label.textContent;
+  try {
+    const res = await fetch('/api/summaries/unfiled-dates');
+    const { dates } = await res.json();
+    if (!dates || !dates.length) {
+      showToast('No summaries with unfiled emails', 'success');
+      return;
+    }
+    let done = 0;
+    for (const date of dates) {
+      done += 1;
+      label.textContent = `Refreshing ${done} of ${dates.length}…`;
+      const card = document.querySelector('.summary-card[data-date="' + date + '"]');
+      if (card) {
+        await regenerateCard(card);
+      } else {
+        await postJSON('/api/generate-summary', { date });
+      }
+    }
+    showToast(`Refreshed ${dates.length} summar${dates.length === 1 ? 'y' : 'ies'}`, 'success');
+  } catch (e) {
+    showToast('Refresh failed', 'error');
+  } finally {
+    label.textContent = original;
+    btn.disabled = false;
+  }
+}
+</script>
 {% endblock %}
