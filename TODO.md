@@ -273,3 +273,60 @@ New file `resortEmail.py` (sibling of `sortEmail.py`), reusing `load_rules` +
 - Dry-run mode performs zero `store`/`copy`/`expunge` calls, returns the report.
 - Use the batched-fetch mock style from `test_sort.py:190` / `_combined_fetch`
   (`test_app.py:715`), extended to emit `Message-ID` headers.
+
+---
+
+## Summaries page — refresh controls
+- Add a refresh icon to each summary card that regenerates that day's report.
+- Add a page button to refresh **all** summaries that still have unfiled emails.
+
+### Plan — reuse the existing per-date generation
+
+Both features build on machinery that already exists: `/api/generate-summary`
+(`app.py:311`) already accepts a `{"date": "YYYY-MM-DD"}` body and runs
+`emailSummary.py --no-serve <date>`, overwriting `email_summary_<date>.html` (+
+its `.json` sidecar). `summary_files()` (`commonFunctions.py:627`) already
+returns per-summary `date`, `unfiled`, `processed`, `need_attention`, and
+`filed` from the sidecar. So the per-card refresh needs **no new backend**, and
+"refresh all unfiled" only needs a thin endpoint to enumerate the dates.
+
+**a. Per-summary refresh icon**
+- **Template** (`templates/summaries.html`): the card is currently a single
+  `<a href="/summaries/{{ f.filename }}">`. Add a refresh control (↻) per card
+  without breaking navigation — either move the `<a>` to wrap only the card body
+  and place the button as a sibling, or keep the anchor and give the button
+  `event.preventDefault(); event.stopPropagation()`. Render it with
+  `data-date="{{ f.date }}"`.
+- **JS** (inline `{% block %}` script in `summaries.html`, or `static/app.js`):
+  on click, POST `{date}` to `/api/generate-summary` with the
+  `X-Requested-With: XMLHttpRequest` header the app expects; show a spinner on
+  the icon; on success update that card's stat counts in place and refresh the
+  `generated_at` label. `/api/generate-summary` currently returns
+  `{ok, filename}` (`app.py:330`) — extend it to also return the fresh sidecar
+  meta (`processed`/`need_attention`/`unfiled`/`filed`/`generated_at`) so the
+  card updates without a full page reload; fall back to `location.reload()`.
+
+**b. "Refresh unfiled" button**
+- **New `GET /api/summaries/unfiled-dates`** (`app.py`): call
+  `summary_files(SUMMARY_DIR)`, return the `date`s where `unfiled` is truthy
+  (newest first). Trivial, fully covered by the `client` fixture which already
+  patches `SUMMARY_DIR` (`test_app.py:33`).
+- **UI**: a "Refresh unfiled" button in the `.page-header`. On click, fetch the
+  unfiled dates, then regenerate them **sequentially** (each
+  `/api/generate-summary` call is a synchronous subprocess up to 300s and hits
+  IMAP + Anthropic — never fan out in parallel), showing progress (`n of N`) and
+  updating each card as it completes. Disable the button while running.
+- **Scale note:** if the unfiled set is ever large enough that sequential
+  regeneration risks a slow page, promote this to the existing background-job
+  pattern — a daemon thread tracked in `_inbox_jobs` with a poll endpoint,
+  exactly like `/api/inbox-analyze/*` (`_get_job`, `app.py`). Start simple
+  (client-driven sequential loop); adopt the job pattern only if needed.
+
+**Tests** (`tests/test_app.py`):
+- `/api/summaries/unfiled-dates`: seed the tmp `SUMMARY_DIR` with a few
+  `email_summary_<date>.json` sidecars (some `unfiled > 0`, some `0`, one with
+  no sidecar) and assert only the unfiled dates come back, newest first.
+- `/api/generate-summary` with a specific `date` already exercises the
+  subprocess path (patch/stub `subprocess.run`); extend it to assert the
+  response now echoes the refreshed sidecar meta.
+- Summaries page renders a refresh control per card and the header button.
