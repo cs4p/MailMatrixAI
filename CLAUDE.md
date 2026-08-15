@@ -73,6 +73,25 @@ ANTHROPIC_API_KEY=sk-ant-...
 
 `emailRules.json` and `.env` are gitignored.
 
+## Container images
+
+**Every published image must carry a semantic version tag** — never ship a
+build that is only reachable as `latest` or `sha-…`. Automated update tools
+(Renovate) can only detect a new release from an immutable `X.Y.Z` tag.
+
+- Release flow: bump `version` in `pyproject.toml` → push a `vX.Y.Z` git tag →
+  `.github/workflows/docker-publish.yml` publishes `X.Y.Z` and `X.Y` to
+  `ghcr.io/cs4p/mailmatrixai`. `docker/metadata-action` strips the leading `v`,
+  so git tag `v0.3.0` → image tag `0.3.0`.
+- Deployment manifests pin the exact `X.Y.Z` tag (`k8s/deployment.yaml`), not
+  `latest`. `renovate.json` points Renovate's `kubernetes` manager at
+  `k8s/**/*.yaml` — that manager has no default file matching, so removing the
+  config silently disables bump PRs.
+- Version-bump commits touch `pyproject.toml` and `electron/package.json` only.
+  The `k8s/deployment.yaml` pin advances **after** CI publishes the image (via
+  the Renovate PR) — bumping it in the same commit would point the cluster at a
+  tag that does not exist yet.
+
 ## Architecture
 
 ### `app.py` — Flask web UI

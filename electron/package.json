@@ -1,7 +1,7 @@
 {
   "name": "mailmatrix-electron",
   "productName": "MailMatrix AI",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Desktop wrapper for the MailMatrix AI Flask app",
   "private": true,
   "main": "main.js",

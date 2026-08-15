@@ -32,7 +32,23 @@ k8s/
 ## The image
 
 The workflow publishes to **`ghcr.io/cs4p/mailmatrixai`** on every push to
-`main` (tag `latest` + a `sha-` tag) and on every `vX.Y.Z` git tag (semver tags).
+`main` (tag `latest` + a `sha-` tag) and on every `vX.Y.Z` git tag, which
+produces the semver tags **`X.Y.Z`** and **`X.Y`** — note that
+`docker/metadata-action` strips the leading `v`, so the git tag `v0.3.0`
+publishes the image tag `0.3.0`.
+
+`deployment.yaml` pins the immutable `X.Y.Z` tag rather than `latest`; that is
+what lets Renovate (configured in [`renovate.json`](../renovate.json)) see the
+running version and open a PR when a newer one is published. Don't replace the
+pin with `latest` — a floating tag is invisible to Renovate.
+
+### Cutting a release
+
+1. Bump `version` in `pyproject.toml`.
+2. Tag and push: `git tag v0.4.0 && git push origin v0.4.0`.
+3. CI publishes `ghcr.io/cs4p/mailmatrixai:0.4.0` (plus `0.4`).
+4. Renovate opens a PR bumping the `image:` pin in `k8s/deployment.yaml`, or
+   bump it by hand and `kubectl apply -f k8s/deployment.yaml`.
 
 - **Public package** (default once you make it public): no pull secret needed.
 - **Private package:** create a pull secret and reference it (see
@@ -41,10 +57,11 @@ The workflow publishes to **`ghcr.io/cs4p/mailmatrixai`** on every push to
 Build and push manually instead of via CI:
 
 ```bash
-# From the repo root
-docker build -t ghcr.io/cs4p/mailmatrixai:latest .
+# From the repo root — tag with the version from pyproject.toml, never bare :latest
+VERSION=$(grep -m1 '^version' pyproject.toml | cut -d'"' -f2)
+docker build -t "ghcr.io/cs4p/mailmatrixai:$VERSION" .
 echo "$GITHUB_TOKEN" | docker login ghcr.io -u <github-user> --password-stdin
-docker push ghcr.io/cs4p/mailmatrixai:latest
+docker push "ghcr.io/cs4p/mailmatrixai:$VERSION"
 ```
 
 Run it locally to sanity-check before deploying:
@@ -55,7 +72,7 @@ docker run --rm -p 5000:5000 \
   -e IMAP_USERNAME=you@example.com -e IMAP_PASSWORD=app-password \
   -e SMTP_SERVER=smtp.fastmail.com -e SMTP_PORT=465 \
   -e ANTHROPIC_API_KEY=sk-ant-... \
-  ghcr.io/cs4p/mailmatrixai:latest
+  ghcr.io/cs4p/mailmatrixai:0.3.0
 # open http://localhost:5000
 ```
 
@@ -118,12 +135,20 @@ secret, and an auth mechanism) and `kubectl apply -f k8s/ingress.yaml`.
 
 ## Updating
 
-```bash
-# after CI publishes a new :latest (imagePullPolicy is Always)
-kubectl rollout restart deployment/mailmatrixai
+Update by moving the pin to a newer published semver tag — either merge the
+Renovate PR and re-apply, or set it directly:
 
-# or pin to an immutable tag
-kubectl set image deployment/mailmatrixai mailmatrixai=ghcr.io/cs4p/mailmatrixai:v0.3.0
+```bash
+kubectl set image deployment/mailmatrixai \
+  mailmatrixai=ghcr.io/cs4p/mailmatrixai:0.4.0
+kubectl rollout status deployment/mailmatrixai
+```
+
+To redeploy the *same* version (e.g. after editing the Secret), restart rather
+than repulling — with a pinned tag there is no new image to fetch:
+
+```bash
+kubectl rollout restart deployment/mailmatrixai
 ```
 
 ## Pulling a private image

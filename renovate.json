@@ -1,0 +1,17 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "kubernetes": {
+    "description": "The kubernetes manager has no default file matching — without this, Renovate never reads k8s/*.yaml and the pinned image tag is never bumped.",
+    "managerFilePatterns": ["k8s/**/*.yaml"]
+  },
+  "packageRules": [
+    {
+      "description": "Group the app's own image bump with nothing else so the PR is a clean version bump.",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["ghcr.io/cs4p/mailmatrixai"],
+      "semanticCommits": "enabled",
+      "commitMessageTopic": "MailMatrixAI image"
+    }
+  ]
+}
