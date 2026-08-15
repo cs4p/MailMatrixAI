@@ -72,7 +72,7 @@ docker run --rm -p 5000:5000 \
   -e IMAP_USERNAME=you@example.com -e IMAP_PASSWORD=app-password \
   -e SMTP_SERVER=smtp.fastmail.com -e SMTP_PORT=465 \
   -e ANTHROPIC_API_KEY=sk-ant-... \
-  ghcr.io/cs4p/mailmatrixai:0.3.0
+  ghcr.io/cs4p/mailmatrixai:0.4.0
 # open http://localhost:5000
 ```
 
