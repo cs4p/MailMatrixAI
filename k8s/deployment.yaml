@@ -28,11 +28,12 @@ spec:
         fsGroup: 1000
       containers:
         - name: mailmatrixai
-          # Pinned to an immutable semver tag (not :latest) so Renovate can see
-          # the version and open a bump PR. Must match a published `vX.Y.Z` git
-          # tag — the workflow strips the leading `v` when tagging the image.
-          image: ghcr.io/cs4p/mailmatrixai:0.4.0
-          imagePullPolicy: IfNotPresent
+          # Tracks the rolling :latest image (republished on every push to main).
+          # Paired with imagePullPolicy: Always so a pod restart / rollout always
+          # pulls the newest image instead of a cached layer. Pin to an immutable
+          # :X.Y.Z tag instead if you need reproducible, auditable deploys.
+          image: ghcr.io/cs4p/mailmatrixai:latest
+          imagePullPolicy: Always
           ports:
             - name: http
               containerPort: 5000

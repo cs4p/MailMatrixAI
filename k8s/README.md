@@ -37,18 +37,23 @@ produces the semver tags **`X.Y.Z`** and **`X.Y`** — note that
 `docker/metadata-action` strips the leading `v`, so the git tag `v0.3.0`
 publishes the image tag `0.3.0`.
 
-`deployment.yaml` pins the immutable `X.Y.Z` tag rather than `latest`; that is
-what lets Renovate (configured in [`renovate.json`](../renovate.json)) see the
-running version and open a PR when a newer one is published. Don't replace the
-pin with `latest` — a floating tag is invisible to Renovate.
+`deployment.yaml` tracks the rolling **`latest`** tag (republished on every push
+to `main`), paired with `imagePullPolicy: Always` so each rollout pulls the
+newest image. Trade-off: a floating tag is invisible to Renovate (configured in
+[`renovate.json`](../renovate.json)), so it will **not** open version-bump PRs
+against `deployment.yaml`. If you'd rather have Renovate tracking and
+reproducible, auditable deploys, pin an immutable `X.Y.Z` tag instead.
 
 ### Cutting a release
 
 1. Bump `version` in `pyproject.toml`.
 2. Tag and push: `git tag v0.4.0 && git push origin v0.4.0`.
-3. CI publishes `ghcr.io/cs4p/mailmatrixai:0.4.0` (plus `0.4`).
-4. Renovate opens a PR bumping the `image:` pin in `k8s/deployment.yaml`, or
-   bump it by hand and `kubectl apply -f k8s/deployment.yaml`.
+3. CI publishes `ghcr.io/cs4p/mailmatrixai:0.4.0` (plus `0.4`) and republishes
+   `latest`.
+4. Since `deployment.yaml` tracks `latest`, roll it out with
+   `kubectl rollout restart deployment/mailmatrixai`. (If you pin an `X.Y.Z` tag
+   instead, bump it — by hand or via a Renovate PR — and
+   `kubectl apply -f k8s/deployment.yaml`.)
 
 - **Public package** (default once you make it public): no pull secret needed.
 - **Private package:** create a pull secret and reference it (see
@@ -135,20 +140,21 @@ secret, and an auth mechanism) and `kubectl apply -f k8s/ingress.yaml`.
 
 ## Updating
 
-Update by moving the pin to a newer published semver tag — either merge the
-Renovate PR and re-apply, or set it directly:
-
-```bash
-kubectl set image deployment/mailmatrixai \
-  mailmatrixai=ghcr.io/cs4p/mailmatrixai:0.4.0
-kubectl rollout status deployment/mailmatrixai
-```
-
-To redeploy the *same* version (e.g. after editing the Secret), restart rather
-than repulling — with a pinned tag there is no new image to fetch:
+Because the deployment tracks `latest`, pick up a newly published image (or pick
+up an edited Secret) by restarting the rollout — `imagePullPolicy: Always` means
+each new pod pulls the current `latest`:
 
 ```bash
 kubectl rollout restart deployment/mailmatrixai
+kubectl rollout status deployment/mailmatrixai
+```
+
+To deploy a specific, immutable version instead, set an `X.Y.Z` tag directly:
+
+```bash
+kubectl set image deployment/mailmatrixai \
+  mailmatrixai=ghcr.io/cs4p/mailmatrixai:0.4.2
+kubectl rollout status deployment/mailmatrixai
 ```
 
 ## Pulling a private image
