@@ -7,11 +7,13 @@
   },
   "packageRules": [
     {
-      "description": "Group the app's own image bump with nothing else so the PR is a clean version bump.",
+      "description": "Group the app's own image bump with nothing else so the PR is a clean version bump, and auto-merge it (once the PR's docker build check is green) so new releases roll into k8s/deployment.yaml without manual clicks.",
       "matchDatasources": ["docker"],
       "matchPackageNames": ["ghcr.io/cs4p/mailmatrixai"],
       "semanticCommits": "enabled",
-      "commitMessageTopic": "MailMatrixAI image"
+      "commitMessageTopic": "MailMatrixAI image",
+      "automerge": true,
+      "automergeType": "pr"
     }
   ]
 }
