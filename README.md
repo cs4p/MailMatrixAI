@@ -164,13 +164,25 @@ message:
 - contains `#minor` → **minor** (`0.4.0` → `0.5.0`)
 - contains `#major` → **major** (`0.4.0` → `1.0.0`)
 
-The bump commit is made with the built-in `GITHUB_TOKEN`, whose pushes don't
-retrigger workflows, so it can't loop. Because of that same rule, the tag it
-pushes does **not** trigger the container build in `docker-publish.yml`; the
-merge that preceded the bump already built and pushed the `latest`/`main`/`sha`
-images. To also auto-build semver-tagged images (`0.5.0`, `0.5`) from the bot
-tag, run the bump workflow's checkout/push with a Personal Access Token secret
-instead of `GITHUB_TOKEN`.
+The bump commit and tag are pushed with a Personal Access Token stored as the
+`RELEASE_PAT` repository secret (not the built-in `GITHUB_TOKEN`, whose pushes
+can't trigger other workflows). Using a PAT means the `vX.Y.Z` tag push **does**
+trigger [`docker-publish.yml`](.github/workflows/docker-publish.yml), which
+builds the semver-tagged container images (`ghcr.io/…:0.5.0`, `:0.5`). The
+bump commit itself carries a `[skip version]` marker so it neither re-runs the
+bump workflow (job-level `if`) nor rebuilds the `latest`/`main` image
+redundantly (docker-publish skips `[skip version]` commits on branch pushes but
+always builds on tags).
+
+**Setup — the `RELEASE_PAT` secret must exist for bumps to succeed:**
+
+1. Create a token — either a fine-grained PAT scoped to this repo with
+   **Contents: Read and write**, or a classic PAT with the **`repo`** scope.
+2. Add it as a secret without putting it in shell history:
+   ```bash
+   gh secret set RELEASE_PAT --repo cs4p/MailMatrixAI   # paste the token when prompted
+   ```
+   (or Settings → Secrets and variables → Actions → New repository secret).
 
 ## Project structure
 

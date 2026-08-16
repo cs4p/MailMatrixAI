@@ -17,6 +17,10 @@ env:
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
+    # Always build for tags (that's where semver images come from) and for PRs.
+    # For a branch push, skip the automated version-bump commit — the merge that
+    # preceded it already built the latest/main/sha images for identical code.
+    if: ${{ github.ref_type == 'tag' || !contains(github.event.head_commit.message, '[skip version]') }}
     permissions:
       contents: read
       packages: write        # required to push to GHCR
