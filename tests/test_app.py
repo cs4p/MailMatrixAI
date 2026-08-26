@@ -251,6 +251,164 @@ def test_api_sort_failure(client):
     assert "IMAP" in data["error"]
 
 
+# ── /api/resort ───────────────────────────────────────────────────────────────
+
+_RESORT_CREDS = {"IMAP_SERVER": "imap.test.com", "IMAP_USERNAME": "u", "IMAP_PASSWORD": "p"}
+
+
+def _resort_result(**totals):
+    base = {"labels": 1, "messages": 1, "scanned": 1, "to_add": 0, "to_remove": 0,
+            "unmatched": 0, "no_msgid": 0, "added": 0, "removed": 0, "skipped": 0}
+    base.update(totals)
+    return {"ok": True, "applied": False, "truncated": False, "limit": 100,
+            "labels": {}, "totals": base, "errors": []}
+
+
+def test_api_resort_dryrun_does_not_apply(client, mock_imap):
+    with (
+        patch.dict(os.environ, _RESORT_CREDS),
+        patch("app.connect_to_imap", return_value=mock_imap),
+        patch("app.resort", return_value=_resort_result(to_add=2)) as resort,
+    ):
+        resp = client.post("/api/resort?dryrun=1")
+
+    assert resp.status_code == 200
+    assert resp.get_json()["totals"]["to_add"] == 2
+    assert resort.call_args.kwargs["apply"] is False
+    mock_imap.logout.assert_called_once()
+
+
+def test_api_resort_body_flag_also_selects_dryrun(client, mock_imap):
+    with (
+        patch.dict(os.environ, _RESORT_CREDS),
+        patch("app.connect_to_imap", return_value=mock_imap),
+        patch("app.resort", return_value=_resort_result()) as resort,
+    ):
+        client.post("/api/resort", data=json.dumps({"dryrun": True}),
+                    content_type="application/json")
+
+    assert resort.call_args.kwargs["apply"] is False
+
+
+def test_api_resort_applies_without_dryrun(client, mock_imap):
+    with (
+        patch.dict(os.environ, _RESORT_CREDS),
+        patch("app.connect_to_imap", return_value=mock_imap),
+        patch("app.resort", return_value=_resort_result(removed=1)) as resort,
+    ):
+        resp = client.post("/api/resort")
+
+    assert resp.status_code == 200
+    assert resort.call_args.kwargs["apply"] is True
+
+
+def test_api_resort_passes_the_configured_limit(client, mock_imap):
+    with (
+        patch.dict(os.environ, {**_RESORT_CREDS, "RESORT_MAX_MESSAGES": "75"}),
+        patch("app.connect_to_imap", return_value=mock_imap),
+        patch("app.resort", return_value=_resort_result()) as resort,
+    ):
+        client.post("/api/resort?dryrun=1")
+
+    assert resort.call_args.kwargs["max_messages"] == 75
+
+
+def test_api_resort_apply_invalidates_inbox_count_cache(client, mock_imap):
+    with (
+        patch.dict(os.environ, _RESORT_CREDS),
+        patch("app.connect_to_imap", return_value=mock_imap) as mock_connect,
+    ):
+        client.get("/api/inbox-stats")
+        with patch("app.resort", return_value=_resort_result(removed=1)):
+            client.post("/api/resort")
+        client.get("/api/inbox-stats")
+
+    # Without invalidation the second stats call would be served from cache.
+    assert mock_connect.call_count == 3
+
+
+def test_api_resort_end_to_end_moves_a_misfiled_message(client):
+    """No patching of resort() — the real reconcile runs against a fake IMAP
+    server, so the wiring (rules file → plan → JSON report) is covered too."""
+    from tests.test_resort import make_fake_imap
+
+    imap = make_fake_imap(MagicMock())
+    imap.mailboxes = {
+        # boss@work.com belongs in Work (SAMPLE_RULES) but sits in Shopping.
+        "MailMatrixCategories/Shopping": [(b"4", "boss@work.com", "<a@x>")],
+        "MailMatrixCategories/Work": [],
+        "INBOX": [(b"1", "boss@work.com", "<z@x>")],
+    }
+
+    with (
+        patch.dict(os.environ, _RESORT_CREDS),
+        patch("app.connect_to_imap", return_value=imap),
+    ):
+        preview = client.post("/api/resort?dryrun=1").get_json()
+        assert preview["totals"]["to_add"] == 1
+        assert preview["totals"]["to_remove"] == 1
+        assert imap.copies == [] and imap.deleted == []
+
+        applied = client.post("/api/resort").get_json()
+
+    assert applied["totals"]["added"] == 1
+    assert applied["totals"]["removed"] == 1
+    assert imap.mailboxes["MailMatrixCategories/Work"] == [(b"4", "boss@work.com", "<a@x>")]
+    assert imap.mailboxes["MailMatrixCategories/Shopping"] == []
+    assert imap.mailboxes["INBOX"] == [(b"1", "boss@work.com", "<z@x>")]  # untouched
+
+
+def test_api_resort_requires_credentials(client):
+    with patch.dict(os.environ, {"IMAP_SERVER": "", "IMAP_USERNAME": "", "IMAP_PASSWORD": ""}):
+        resp = client.post("/api/resort?dryrun=1")
+
+    assert resp.status_code == 400
+    assert resp.get_json()["ok"] is False
+
+
+def test_api_resort_rejects_empty_rules(client):
+    flask_app_module.RULES_PATH.write_text(json.dumps({"labels": []}))
+    with patch.dict(os.environ, _RESORT_CREDS):
+        resp = client.post("/api/resort?dryrun=1")
+
+    assert resp.status_code == 400
+    assert "No rules" in resp.get_json()["error"]
+
+
+def test_api_resort_reports_connection_failure(client):
+    with (
+        patch.dict(os.environ, _RESORT_CREDS),
+        patch("app.connect_to_imap", side_effect=OSError("refused")),
+    ):
+        resp = client.post("/api/resort?dryrun=1")
+
+    assert resp.status_code == 502
+    assert "refused" in resp.get_json()["error"]
+
+
+def test_api_resort_rejects_concurrent_runs(client, mock_imap):
+    flask_app_module._resort_lock.acquire()
+    try:
+        with patch.dict(os.environ, _RESORT_CREDS):
+            resp = client.post("/api/resort?dryrun=1")
+    finally:
+        flask_app_module._resort_lock.release()
+
+    assert resp.status_code == 409
+    assert "already running" in resp.get_json()["error"]
+
+
+def test_api_resort_releases_the_lock_after_a_failure(client):
+    with (
+        patch.dict(os.environ, _RESORT_CREDS),
+        patch("app.connect_to_imap", side_effect=OSError("refused")),
+    ):
+        client.post("/api/resort?dryrun=1")
+
+    assert flask_app_module._resort_lock.acquire(blocking=False)
+    flask_app_module._resort_lock.release()
+
+
 # ── /api/generate-summary ─────────────────────────────────────────────────────
 
 def test_api_generate_summary_success(client):
@@ -619,6 +777,55 @@ def test_api_config_ignores_disallowed_keys(client):
     )
     assert resp.get_json()["ok"] is True
     assert "DANGEROUS_KEY" not in os.environ
+
+
+def test_api_config_saves_resort_limit(client):
+    resp = client.post(
+        "/api/config",
+        data=json.dumps({"RESORT_MAX_MESSAGES": "500"}),
+        content_type="application/json",
+    )
+    assert resp.get_json()["ok"] is True
+    assert commonFunctions.get_credential("RESORT_MAX_MESSAGES") == "500"
+
+
+def test_api_config_clears_resort_limit_with_blank(client):
+    client.post("/api/config", data=json.dumps({"RESORT_MAX_MESSAGES": "500"}),
+                content_type="application/json")
+    resp = client.post("/api/config", data=json.dumps({"RESORT_MAX_MESSAGES": ""}),
+                       content_type="application/json")
+    assert resp.get_json()["ok"] is True
+    assert commonFunctions.get_credential("RESORT_MAX_MESSAGES") == ""
+
+
+def test_api_config_rejects_non_numeric_resort_limit(client):
+    resp = client.post(
+        "/api/config",
+        data=json.dumps({"RESORT_MAX_MESSAGES": "lots"}),
+        content_type="application/json",
+    )
+    assert resp.status_code == 400
+    assert resp.get_json()["ok"] is False
+
+
+def test_api_config_rejects_negative_resort_limit(client):
+    resp = client.post(
+        "/api/config",
+        data=json.dumps({"RESORT_MAX_MESSAGES": "-5"}),
+        content_type="application/json",
+    )
+    assert resp.status_code == 400
+
+
+def test_config_page_shows_resort_limit_field(client):
+    resp = client.get("/config")
+    assert b"RESORT_MAX_MESSAGES" in resp.data
+
+
+def test_rules_page_has_resort_button(client):
+    resp = client.get("/rules")
+    assert b"Resort Now" in resp.data
+    assert b"/api/resort?dryrun=1" in resp.data
 
 
 def test_api_config_rejected_without_csrf_header(client):

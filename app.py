@@ -18,6 +18,9 @@ from flask import Flask, g, jsonify, redirect, render_template, request, send_fi
 
 import commonFunctions
 from emailSummary import accept_filing, analyze_with_claude, deduplicate_inbox_emails
+import resortEmail
+from resortEmail import resort, resort_max_messages
+from sortEmail import load_rules as load_sort_rules
 from cleanupRules import find_domain_collapsible, find_duplicate_addresses
 from commonFunctions import (
     add_sender_to_label_rule,
@@ -105,8 +108,15 @@ RULES_PATH = DATA_DIR / "emailRules.json"
 SUMMARY_DIR = DATA_DIR / "emailSummary"
 ENV_PATH = BASE_DIR / ".env"
 _sort_lock = threading.Lock()
+# One resort at a time: two concurrent reconciles would race on the same
+# COPY/EXPUNGE work and could double-file a message.
+_resort_lock = threading.Lock()
+# Whitelist for /api/config. RESORT_MAX_MESSAGES is a setting rather than a
+# credential, but it rides in the same Keychain blob so the CLI scripts pick it
+# up from os.environ the same way (see set_credential).
 _CREDENTIAL_KEYS = {"IMAP_SERVER", "IMAP_PORT", "IMAP_USERNAME", "IMAP_PASSWORD",
-                    "SMTP_SERVER", "SMTP_PORT", "ANTHROPIC_API_KEY"}
+                    "SMTP_SERVER", "SMTP_PORT", "ANTHROPIC_API_KEY",
+                    "RESORT_MAX_MESSAGES"}
 
 CLAUDE_BATCH_SIZE = 50
 _INBOX_JOB_MAX_AGE = 600  # seconds a finished job's state is kept around for polling
@@ -271,8 +281,10 @@ def config():
         "SMTP_SERVER": get_credential("SMTP_SERVER"),
         "SMTP_PORT": get_credential("SMTP_PORT"),
         "ANTHROPIC_API_KEY": get_credential("ANTHROPIC_API_KEY"),
+        "RESORT_MAX_MESSAGES": get_credential("RESORT_MAX_MESSAGES"),
     }
-    return render_template("config.html", cfg=cfg)
+    return render_template("config.html", cfg=cfg,
+                           resort_default=resortEmail.DEFAULT_MAX_MESSAGES)
 
 
 # ── API ───────────────────────────────────────────────────────────────────────
@@ -306,6 +318,67 @@ def api_sort():
         return jsonify({"ok": True, "output": result.stdout[-2000:]})
     log.error("Sort failed in %.1fs (exit=%d): %s", elapsed, result.returncode, result.stderr[-500:])
     return jsonify({"ok": False, "error": result.stderr[-2000:]}), 500
+
+
+@app.route("/api/resort", methods=["POST"])
+def api_resort():
+    """Reconcile every MailMatrixCategories/* folder against emailRules.json.
+
+    `?dryrun=1` (or {"dryrun": true}) reports what would change without writing
+    anything — the /rules button always asks for that first and only posts the
+    applying call after the user confirms.
+    """
+    body = _json_body()
+    dryrun = request.args.get("dryrun") == "1" or bool(body.get("dryrun"))
+
+    if not _resort_lock.acquire(blocking=False):
+        return jsonify({"ok": False, "error": "A resort is already running"}), 409
+    try:
+        server = get_credential("IMAP_SERVER")
+        user = get_credential("IMAP_USERNAME")
+        pw = get_credential("IMAP_PASSWORD")
+        port = int(get_credential("IMAP_PORT", "993") or "993")
+        if not (server and user and pw):
+            return jsonify({"ok": False, "error": "IMAP credentials not configured"}), 400
+
+        try:
+            email_to_labels, domain_to_labels = load_sort_rules(str(RULES_PATH))
+        except (json.JSONDecodeError, OSError) as exc:
+            return jsonify({"ok": False, "error": f"Could not load rules: {exc}"}), 400
+        if not (email_to_labels or domain_to_labels):
+            # With no rules every filed message looks unmatched, so a run would
+            # be a guaranteed no-op — say so instead of scanning the mailbox.
+            return jsonify({"ok": False, "error": "No rules configured — nothing to reconcile"}), 400
+
+        log.info("Resort triggered (%s)", "dry run" if dryrun else "apply")
+        t0 = time.monotonic()
+        try:
+            imap = connect_to_imap(server, user, pw, port)
+        except Exception as exc:
+            return jsonify({"ok": False, "error": f"IMAP connection failed: {exc}"}), 502
+        try:
+            result = resort(
+                imap, email_to_labels, domain_to_labels,
+                apply=not dryrun,
+                max_messages=resort_max_messages(),
+            )
+        finally:
+            try:
+                imap.logout()
+            except Exception:
+                pass
+    except Exception as exc:
+        log.exception("Resort failed")
+        return jsonify({"ok": False, "error": str(exc)}), 500
+    finally:
+        _resort_lock.release()
+
+    log.info("Resort %s finished in %.1fs: %s",
+             "dry run" if dryrun else "apply", time.monotonic() - t0, result["totals"])
+    if not dryrun:
+        _invalidate_inbox_count()
+        _invalidate_folders_cache()
+    return jsonify(result)
 
 
 @app.route("/api/generate-summary", methods=["POST"])
@@ -379,6 +452,16 @@ def accept():
 @app.route("/api/config", methods=["POST"])
 def api_config():
     data = _json_body()
+    limit = data.get("RESORT_MAX_MESSAGES")
+    if limit not in (None, ""):
+        # A junk value here would silently fall back to the default on every
+        # run — reject it at the form instead.
+        try:
+            if int(str(limit)) < 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            return jsonify({"ok": False,
+                            "error": "Max messages per resort must be a whole number (0 = no limit)"}), 400
     updated = []
     for key, val in data.items():
         if key in _CREDENTIAL_KEYS and val is not None:
