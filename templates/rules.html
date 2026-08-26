@@ -8,6 +8,7 @@
     <p class="page-subtitle">{{ total_senders }} sender(s) and {{ total_domain_rules }} domain rule(s) across {{ label_names|length }} labels</p>
   </div>
   <div class="page-header-actions">
+    <button class="btn btn-secondary" id="btn-resort" onclick="startResort()">Resort Now…</button>
     <button class="btn btn-secondary" onclick="document.getElementById('import-file').click()">Import Rules…</button>
     <input type="file" id="import-file" accept=".json,application/json" style="display:none" onchange="importRules(this)">
   </div>
@@ -64,6 +65,22 @@
       <button class="btn btn-primary" id="modal-save" onclick="saveEdit()">Save &amp; Move Emails</button>
       <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
       <span class="modal-status" id="modal-status"></span>
+    </div>
+  </div>
+</div>
+
+<!-- Resort report modal -->
+<div id="resort-modal" class="modal-overlay" onclick="if(event.target===this)closeResortModal()">
+  <div class="modal-card modal-card-wide">
+    <div class="modal-header">
+      <h3 class="modal-title" id="resort-title">Resort — Preview</h3>
+      <button class="modal-close" onclick="closeResortModal()">✕</button>
+    </div>
+    <div class="modal-body" id="resort-body"></div>
+    <div class="modal-footer">
+      <button class="btn btn-primary" id="resort-apply" onclick="applyResort()" style="display:none">Apply Changes</button>
+      <button class="btn btn-secondary" id="resort-cancel" onclick="closeResortModal()">Close</button>
+      <span class="modal-status" id="resort-status"></span>
     </div>
   </div>
 </div>
@@ -507,6 +524,186 @@
       .catch(() => showToast('Request failed', 'error'));
   }
 
+
+  // ── Resort (reconcile folders against the rules) ────────────────────────────
+  // Always previewed first: the dry run reports what would move, and only an
+  // explicit Apply performs the COPY/EXPUNGE work.
+  const RESORT_DETAIL_LIMIT = 25;
+  let resortRunning = false;
+
+  function openResortModal() {
+    document.getElementById('resort-modal').style.display = 'flex';
+  }
+
+  function closeResortModal() {
+    if (resortRunning) return;   // don't lose the run's outcome mid-flight
+    document.getElementById('resort-modal').style.display = 'none';
+  }
+
+  function resortNote(text, cls) {
+    const el = document.createElement('div');
+    el.className = 'resort-note' + (cls ? ' ' + cls : '');
+    el.textContent = text;
+    return el;
+  }
+
+  function setResortBody(...nodes) {
+    const body = document.getElementById('resort-body');
+    body.innerHTML = '';
+    nodes.forEach(n => n && body.appendChild(n));
+  }
+
+  function resortSummaryEl(data) {
+    const t = data.totals;
+    const wrap = document.createElement('div');
+    const rows = data.applied
+      ? [['Copies added', t.added], ['Copies removed', t.removed],
+         ['Skipped', t.skipped], ['Messages scanned', t.scanned]]
+      : [['Copies to add', t.to_add], ['Copies to remove', t.to_remove],
+         ['Messages scanned', t.scanned], ['Senders with no rule (left alone)', t.unmatched]];
+    const list = document.createElement('ul');
+    list.className = 'import-summary-list';
+    rows.forEach(([k, v]) => {
+      const li = document.createElement('li');
+      const span = document.createElement('span');
+      span.textContent = k;
+      const strong = document.createElement('strong');
+      strong.textContent = v;
+      li.append(span, strong);
+      list.appendChild(li);
+    });
+    wrap.appendChild(list);
+    if (data.truncated) {
+      wrap.appendChild(resortNote(
+        `Stopped at the ${data.limit}-message limit — the newest messages were checked. `
+        + 'Run again (or raise the limit on the Config page) to continue.', 'warn'));
+    }
+    return wrap;
+  }
+
+  function resortDetailEl(item, kind) {
+    const row = document.createElement('div');
+    row.className = 'resort-item';
+    const sign = document.createElement('span');
+    sign.className = 'resort-sign resort-sign-' + kind;
+    sign.textContent = kind === 'add' ? '+' : '−';
+    const from = document.createElement('span');
+    from.className = 'resort-from';
+    from.textContent = item.from_addr;
+    const subj = document.createElement('span');
+    subj.className = 'resort-subject';
+    subj.textContent = item.subject || '(no subject)';
+    row.append(sign, from, subj);
+    if (kind === 'remove' && item.keep && item.keep.length) {
+      const keep = document.createElement('span');
+      keep.className = 'resort-keep';
+      keep.textContent = 'kept in ' + item.keep.join(', ');
+      row.appendChild(keep);
+    }
+    return row;
+  }
+
+  function resortLabelsEl(data) {
+    const labels = Object.keys(data.labels).sort();
+    const wrap = document.createElement('div');
+    if (!labels.length) {
+      wrap.appendChild(resortNote('Everything already matches the rules — nothing to do.', 'ok'));
+      return wrap;
+    }
+    labels.forEach(label => {
+      const changes = data.labels[label];
+      const block = document.createElement('div');
+      block.className = 'resort-label-block';
+      const head = document.createElement('div');
+      head.className = 'resort-label-head';
+      const name = document.createElement('span');
+      name.className = 'label-chip';
+      name.textContent = label.replace('MailMatrixCategories/', '');
+      const counts = document.createElement('span');
+      counts.className = 'resort-counts';
+      counts.textContent = `+${changes.to_add.length} / −${changes.to_remove.length}`;
+      head.append(name, counts);
+      block.appendChild(head);
+      changes.to_add.slice(0, RESORT_DETAIL_LIMIT).forEach(i => block.appendChild(resortDetailEl(i, 'add')));
+      changes.to_remove.slice(0, RESORT_DETAIL_LIMIT).forEach(i => block.appendChild(resortDetailEl(i, 'remove')));
+      const hidden = Math.max(0, changes.to_add.length - RESORT_DETAIL_LIMIT)
+        + Math.max(0, changes.to_remove.length - RESORT_DETAIL_LIMIT);
+      if (hidden) block.appendChild(resortNote(`…and ${hidden} more`));
+      wrap.appendChild(block);
+    });
+    return wrap;
+  }
+
+  function resortErrorsEl(errors) {
+    if (!errors || !errors.length) return null;
+    const wrap = document.createElement('details');
+    wrap.className = 'resort-errors';
+    const sum = document.createElement('summary');
+    sum.textContent = `${errors.length} warning${errors.length !== 1 ? 's' : ''}`;
+    wrap.appendChild(sum);
+    errors.forEach(e => {
+      const line = document.createElement('div');
+      line.className = 'resort-error-line';
+      line.textContent = e;
+      wrap.appendChild(line);
+    });
+    return wrap;
+  }
+
+  async function startResort() {
+    const btn = document.getElementById('btn-resort');
+    const applyBtn = document.getElementById('resort-apply');
+    btn.disabled = true;
+    resortRunning = true;
+    applyBtn.style.display = 'none';
+    document.getElementById('resort-title').textContent = 'Resort — Preview';
+    document.getElementById('resort-status').textContent = '';
+    setResortBody(resortNote('Scanning filed messages against the rules… this can take a minute.'));
+    openResortModal();
+
+    try {
+      const d = await postJSON('/api/resort?dryrun=1', {});
+      if (!d.ok) {
+        setResortBody(resortNote(d.error || 'Resort failed', 'warn'));
+        return;
+      }
+      setResortBody(resortSummaryEl(d), resortLabelsEl(d), resortErrorsEl(d.errors));
+      if (d.totals.to_add || d.totals.to_remove) applyBtn.style.display = '';
+    } catch (err) {
+      setResortBody(resortNote('Request failed', 'warn'));
+    } finally {
+      resortRunning = false;
+      btn.disabled = false;
+    }
+  }
+
+  async function applyResort() {
+    if (!confirm('Apply these changes?\n\nCopies will be added to the labels their sender matches and removed from the ones it no longer matches. Other folders and INBOX are not touched.')) return;
+    const applyBtn = document.getElementById('resort-apply');
+    const statusEl = document.getElementById('resort-status');
+    applyBtn.disabled = true;
+    resortRunning = true;
+    statusEl.textContent = 'Applying…';
+
+    try {
+      const d = await postJSON('/api/resort', {});
+      if (!d.ok) {
+        statusEl.textContent = 'Error: ' + (d.error || 'Unknown');
+        return;
+      }
+      document.getElementById('resort-title').textContent = 'Resort — Applied';
+      setResortBody(resortSummaryEl(d), resortErrorsEl(d.errors));
+      applyBtn.style.display = 'none';
+      statusEl.textContent = '';
+      showToast(`Resort complete: ${d.totals.added} added, ${d.totals.removed} removed`, 'success');
+    } catch (err) {
+      statusEl.textContent = 'Request failed';
+    } finally {
+      resortRunning = false;
+      applyBtn.disabled = false;
+    }
+  }
+
   // ── Import rules ────────────────────────────────────────────────────────────
   function closeImportModal() {
     document.getElementById('import-modal').style.display = 'none';
@@ -558,7 +755,11 @@
   }
 
   // Close modal on Escape
-  document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
+  document.addEventListener('keydown', e => {
+    if (e.key !== 'Escape') return;
+    closeModal();
+    closeResortModal();
+  });
 
   applyFilter();
 </script>

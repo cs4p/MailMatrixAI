@@ -201,76 +201,38 @@ flag/star, mark-unread, folder rename/delete, server-side conversation threading
 
 ---
 
-## resort function
-- Add a resort function to the rules view that will go through all existing email and make sure everything is labeled correctly, removing any extra labels in the MailMatrix category but leaving other labels alone. This is intended as a once in a while cleanup routine to make sure the labels are correct.
+## resort function — ✅ shipped (2026-08-25)
 
-### Plan — full reconcile against emailRules.json
+Implemented as `resortEmail.py` + `POST /api/resort` + the **Resort Now…**
+button on `/rules`. See CLAUDE.md ("`resortEmail.py` pipeline") for the design
+and `tests/test_resort.py` (29 tests) / the `/api/resort` block in
+`tests/test_app.py` for the safety invariants each change must keep.
 
-Make every `MailMatrixCategories/*` folder exactly match the rules: **remove**
-copies whose sender no longer matches that label, and **add** copies to every
-MailMatrix label the sender now matches. Never touch INBOX or any non-MailMatrix
-folder. Because folders are independent physical copies, "leave other labels
-alone" is automatic — we only ever operate inside the `MailMatrixCategories/`
-prefix.
+Delivered:
+- `resortEmail.py` — `build_index()` → `plan_resort()` → `report_from_plan()` →
+  `apply_plan()`; CLI is dry-run by default (`--apply`, `--limit N`).
+- Additions run before removals; a copy is only expunged once the message is
+  confirmed present in a matching label. A sender with **no** matching rule is
+  left alone entirely, and messages without a `Message-ID` are read-only.
+- Every add re-checks the target with `UID SEARCH HEADER Message-ID` before
+  COPY, so a truncated scan can never duplicate a message.
+- `POST /api/resort` (`?dryrun=1` → report, else apply), serialized by
+  `_resort_lock`, invalidating the inbox-count and folder caches after an apply.
+- `/rules` "Resort Now…" → preview modal → explicit **Apply Changes**.
+- `RESORT_MAX_MESSAGES` setting (Config page, default 2000, `0` = unlimited)
+  caps the messages examined per run, newest first.
 
-New file `resortEmail.py` (sibling of `sortEmail.py`), reusing `load_rules` +
-`find_matching_labels` (`sortEmail.py:23`/`40`).
+Deliberately not built: a background-job/progress variant of the endpoint (the
+message cap keeps a run short enough to be synchronous), and de-duplicating
+two copies of the same message *within* one folder.
 
-**Algorithm:**
-1. Load rules → `email_to_labels`, `domain_to_labels` (`sortEmail.load_rules`).
-2. `labels = get_all_labels(imap, "MailMatrixCategories")`
-   (`commonFunctions.py:283`).
-3. **Build a cross-folder message index** (to dedupe the additive half by
-   identity). For each label folder L:
-   - `uids = uid_search_all(imap, L)` (`commonFunctions.py:1062`)
-   - `fetch_many(imap, uids, '(BODY.PEEK[HEADER.FIELDS (FROM MESSAGE-ID)])', use_uid=True)`
-     (`commonFunctions.py:428`)
-   - Record per message: `msgid`, `from_addr` (`extract_email_address`), folder
-     L, UID. Maintain `present[msgid] = {folders it lives in}` and
-     `sender[msgid] = from_addr`.
-4. **Removal pass:** for message m in folder L, if
-   `L not in find_matching_labels(sender[m])` → remove that copy: select L
-   writable, `UID STORE <uid> +FLAGS \Deleted`, `UID EXPUNGE` (pattern from
-   `move_message_uid`, `commonFunctions.py:1253`). Only the wrong-folder copy is
-   expunged; copies elsewhere are untouched.
-5. **Additive pass:** for each unique message m, for each label in
-   `find_matching_labels(sender[m])` not in `present[m]` → COPY m into that
-   folder (source from any folder m currently lives in; `ensure_mailbox` first,
-   `commonFunctions.py:1199`). Never COPY where it would duplicate (check
-   `present[m]`).
-6. **Domain-rule safety:** always match via `find_matching_labels` (address ∪
-   domain), never the address dict alone — a message can legitimately belong to a
-   label by domain even if its exact sender isn't listed. Prevents the removal
-   pass from deleting domain-matched mail.
-
-**Safety / UX:**
-- **Dry-run first.** `resort_inbox(..., apply=False)` returns a report
-  (`{label: {"to_remove": [...], "to_add": [...]}}`) with no writes; the `/rules`
-  view shows it and the user confirms before an `apply=True` run (mirrors the
-  report-then-act shape of `/api/inbox-analyze`).
-- **Never delete unless certain** — same invariant as `sort_inbox`
-  (`sortEmail.py:107`) and `move_message_uid`: a copy is expunged only when the
-  sender definitively doesn't match that label.
-- Confine every write to the `MailMatrixCategories/` prefix; assert each target
-  passes `validate_label` (`commonFunctions.py:197`).
-
-**Wiring:**
-- **`POST /api/resort`** in `app.py`, mirroring `/api/sort` (`app.py:293`):
-  `?dryrun=1` returns the report; without it, applies. Guard with a lock like the
-  existing `_sort_lock`. Invalidate the inbox-count / folder caches after an
-  apply.
-- **`/rules` view**: a "Resort now" button that shows the dry-run report first,
-  then an "Apply" confirmation.
-
-**Tests** (`tests/test_resort.py`, patterned on `tests/test_sort.py`):
-- Correctly-filed message → no removal, no add.
-- Wrong-folder copy → `UID STORE +FLAGS \Deleted` + `UID EXPUNGE` on that folder
-  only; other folders untouched.
-- Missing label → `UID COPY` into the new folder; no COPY when already present
-  (dedupe by Message-ID).
-- Domain-matched sender not in address list → NOT removed.
-- Failed COPY never triggers a delete (mirror `test_sort.py:167`).
-- Dry-run mode performs zero `store`/`copy`/`expunge` calls, returns the report.
-- Use the batched-fetch mock style from `test_sort.py:190` / `_combined_fetch`
-  (`test_app.py:715`), extended to emit `Message-ID` headers.
-
+**General Ideas**
+- Include a link to open the full email in a model dialog whenever displaying an email summary
+- Set a custom sort order for mailmatrix categories to be used when displaying filled messages in summaries
+- ~~Add a "Resort now" button to the `/rules` view that shows the dry-run report first, then an "Apply" confirmation~~ — done (2026-08-25)
+- Add a setting to specify the time zone for sorting messages
+- ~~Add a setting to specify the maximum number of messages to process in a single resort operation~~ — done (2026-08-25), `RESORT_MAX_MESSAGES` on `/config`
+- Add a setting to schedule summaries to run at regular intervals
+- add a view that shows all email from the past 24 hours sorted by category using the custom order
+- add a view that shows all email from the past 7 days sorted by category using the custom order
+- add a view that shows all email from the past 30 days sorted by category using the custom order
