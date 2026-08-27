@@ -201,132 +201,38 @@ flag/star, mark-unread, folder rename/delete, server-side conversation threading
 
 ---
 
-## resort function
-- Add a resort function to the rules view that will go through all existing email and make sure everything is labeled correctly, removing any extra labels in the MailMatrix category but leaving other labels alone. This is intended as a once in a while cleanup routine to make sure the labels are correct.
+## resort function — ✅ shipped (2026-08-25)
 
-### Plan — full reconcile against emailRules.json
+Implemented as `resortEmail.py` + `POST /api/resort` + the **Resort Now…**
+button on `/rules`. See CLAUDE.md ("`resortEmail.py` pipeline") for the design
+and `tests/test_resort.py` (29 tests) / the `/api/resort` block in
+`tests/test_app.py` for the safety invariants each change must keep.
 
-Make every `MailMatrixCategories/*` folder exactly match the rules: **remove**
-copies whose sender no longer matches that label, and **add** copies to every
-MailMatrix label the sender now matches. Never touch INBOX or any non-MailMatrix
-folder. Because folders are independent physical copies, "leave other labels
-alone" is automatic — we only ever operate inside the `MailMatrixCategories/`
-prefix.
+Delivered:
+- `resortEmail.py` — `build_index()` → `plan_resort()` → `report_from_plan()` →
+  `apply_plan()`; CLI is dry-run by default (`--apply`, `--limit N`).
+- Additions run before removals; a copy is only expunged once the message is
+  confirmed present in a matching label. A sender with **no** matching rule is
+  left alone entirely, and messages without a `Message-ID` are read-only.
+- Every add re-checks the target with `UID SEARCH HEADER Message-ID` before
+  COPY, so a truncated scan can never duplicate a message.
+- `POST /api/resort` (`?dryrun=1` → report, else apply), serialized by
+  `_resort_lock`, invalidating the inbox-count and folder caches after an apply.
+- `/rules` "Resort Now…" → preview modal → explicit **Apply Changes**.
+- `RESORT_MAX_MESSAGES` setting (Config page, default 2000, `0` = unlimited)
+  caps the messages examined per run, newest first.
 
-New file `resortEmail.py` (sibling of `sortEmail.py`), reusing `load_rules` +
-`find_matching_labels` (`sortEmail.py:23`/`40`).
+Deliberately not built: a background-job/progress variant of the endpoint (the
+message cap keeps a run short enough to be synchronous), and de-duplicating
+two copies of the same message *within* one folder.
 
-**Algorithm:**
-1. Load rules → `email_to_labels`, `domain_to_labels` (`sortEmail.load_rules`).
-2. `labels = get_all_labels(imap, "MailMatrixCategories")`
-   (`commonFunctions.py:283`).
-3. **Build a cross-folder message index** (to dedupe the additive half by
-   identity). For each label folder L:
-   - `uids = uid_search_all(imap, L)` (`commonFunctions.py:1062`)
-   - `fetch_many(imap, uids, '(BODY.PEEK[HEADER.FIELDS (FROM MESSAGE-ID)])', use_uid=True)`
-     (`commonFunctions.py:428`)
-   - Record per message: `msgid`, `from_addr` (`extract_email_address`), folder
-     L, UID. Maintain `present[msgid] = {folders it lives in}` and
-     `sender[msgid] = from_addr`.
-4. **Removal pass:** for message m in folder L, if
-   `L not in find_matching_labels(sender[m])` → remove that copy: select L
-   writable, `UID STORE <uid> +FLAGS \Deleted`, `UID EXPUNGE` (pattern from
-   `move_message_uid`, `commonFunctions.py:1253`). Only the wrong-folder copy is
-   expunged; copies elsewhere are untouched.
-5. **Additive pass:** for each unique message m, for each label in
-   `find_matching_labels(sender[m])` not in `present[m]` → COPY m into that
-   folder (source from any folder m currently lives in; `ensure_mailbox` first,
-   `commonFunctions.py:1199`). Never COPY where it would duplicate (check
-   `present[m]`).
-6. **Domain-rule safety:** always match via `find_matching_labels` (address ∪
-   domain), never the address dict alone — a message can legitimately belong to a
-   label by domain even if its exact sender isn't listed. Prevents the removal
-   pass from deleting domain-matched mail.
-
-**Safety / UX:**
-- **Dry-run first.** `resort_inbox(..., apply=False)` returns a report
-  (`{label: {"to_remove": [...], "to_add": [...]}}`) with no writes; the `/rules`
-  view shows it and the user confirms before an `apply=True` run (mirrors the
-  report-then-act shape of `/api/inbox-analyze`).
-- **Never delete unless certain** — same invariant as `sort_inbox`
-  (`sortEmail.py:107`) and `move_message_uid`: a copy is expunged only when the
-  sender definitively doesn't match that label.
-- Confine every write to the `MailMatrixCategories/` prefix; assert each target
-  passes `validate_label` (`commonFunctions.py:197`).
-
-**Wiring:**
-- **`POST /api/resort`** in `app.py`, mirroring `/api/sort` (`app.py:293`):
-  `?dryrun=1` returns the report; without it, applies. Guard with a lock like the
-  existing `_sort_lock`. Invalidate the inbox-count / folder caches after an
-  apply.
-- **`/rules` view**: a "Resort now" button that shows the dry-run report first,
-  then an "Apply" confirmation.
-
-**Tests** (`tests/test_resort.py`, patterned on `tests/test_sort.py`):
-- Correctly-filed message → no removal, no add.
-- Wrong-folder copy → `UID STORE +FLAGS \Deleted` + `UID EXPUNGE` on that folder
-  only; other folders untouched.
-- Missing label → `UID COPY` into the new folder; no COPY when already present
-  (dedupe by Message-ID).
-- Domain-matched sender not in address list → NOT removed.
-- Failed COPY never triggers a delete (mirror `test_sort.py:167`).
-- Dry-run mode performs zero `store`/`copy`/`expunge` calls, returns the report.
-- Use the batched-fetch mock style from `test_sort.py:190` / `_combined_fetch`
-  (`test_app.py:715`), extended to emit `Message-ID` headers.
-
----
-
-## Summaries page — refresh controls
-- Add a refresh icon to each summary card that regenerates that day's report.
-- Add a page button to refresh **all** summaries that still have unfiled emails.
-
-### Plan — reuse the existing per-date generation
-
-Both features build on machinery that already exists: `/api/generate-summary`
-(`app.py:311`) already accepts a `{"date": "YYYY-MM-DD"}` body and runs
-`emailSummary.py --no-serve <date>`, overwriting `email_summary_<date>.html` (+
-its `.json` sidecar). `summary_files()` (`commonFunctions.py:627`) already
-returns per-summary `date`, `unfiled`, `processed`, `need_attention`, and
-`filed` from the sidecar. So the per-card refresh needs **no new backend**, and
-"refresh all unfiled" only needs a thin endpoint to enumerate the dates.
-
-**a. Per-summary refresh icon**
-- **Template** (`templates/summaries.html`): the card is currently a single
-  `<a href="/summaries/{{ f.filename }}">`. Add a refresh control (↻) per card
-  without breaking navigation — either move the `<a>` to wrap only the card body
-  and place the button as a sibling, or keep the anchor and give the button
-  `event.preventDefault(); event.stopPropagation()`. Render it with
-  `data-date="{{ f.date }}"`.
-- **JS** (inline `{% block %}` script in `summaries.html`, or `static/app.js`):
-  on click, POST `{date}` to `/api/generate-summary` with the
-  `X-Requested-With: XMLHttpRequest` header the app expects; show a spinner on
-  the icon; on success update that card's stat counts in place and refresh the
-  `generated_at` label. `/api/generate-summary` currently returns
-  `{ok, filename}` (`app.py:330`) — extend it to also return the fresh sidecar
-  meta (`processed`/`need_attention`/`unfiled`/`filed`/`generated_at`) so the
-  card updates without a full page reload; fall back to `location.reload()`.
-
-**b. "Refresh unfiled" button**
-- **New `GET /api/summaries/unfiled-dates`** (`app.py`): call
-  `summary_files(SUMMARY_DIR)`, return the `date`s where `unfiled` is truthy
-  (newest first). Trivial, fully covered by the `client` fixture which already
-  patches `SUMMARY_DIR` (`test_app.py:33`).
-- **UI**: a "Refresh unfiled" button in the `.page-header`. On click, fetch the
-  unfiled dates, then regenerate them **sequentially** (each
-  `/api/generate-summary` call is a synchronous subprocess up to 300s and hits
-  IMAP + Anthropic — never fan out in parallel), showing progress (`n of N`) and
-  updating each card as it completes. Disable the button while running.
-- **Scale note:** if the unfiled set is ever large enough that sequential
-  regeneration risks a slow page, promote this to the existing background-job
-  pattern — a daemon thread tracked in `_inbox_jobs` with a poll endpoint,
-  exactly like `/api/inbox-analyze/*` (`_get_job`, `app.py`). Start simple
-  (client-driven sequential loop); adopt the job pattern only if needed.
-
-**Tests** (`tests/test_app.py`):
-- `/api/summaries/unfiled-dates`: seed the tmp `SUMMARY_DIR` with a few
-  `email_summary_<date>.json` sidecars (some `unfiled > 0`, some `0`, one with
-  no sidecar) and assert only the unfiled dates come back, newest first.
-- `/api/generate-summary` with a specific `date` already exercises the
-  subprocess path (patch/stub `subprocess.run`); extend it to assert the
-  response now echoes the refreshed sidecar meta.
-- Summaries page renders a refresh control per card and the header button.
+**General Ideas**
+- Include a link to open the full email in a model dialog whenever displaying an email summary
+- Set a custom sort order for mailmatrix categories to be used when displaying filled messages in summaries
+- ~~Add a "Resort now" button to the `/rules` view that shows the dry-run report first, then an "Apply" confirmation~~ — done (2026-08-25)
+- Add a setting to specify the time zone for sorting messages
+- ~~Add a setting to specify the maximum number of messages to process in a single resort operation~~ — done (2026-08-25), `RESORT_MAX_MESSAGES` on `/config`
+- Add a setting to schedule summaries to run at regular intervals
+- add a view that shows all email from the past 24 hours sorted by category using the custom order
+- add a view that shows all email from the past 7 days sorted by category using the custom order
+- add a view that shows all email from the past 30 days sorted by category using the custom order

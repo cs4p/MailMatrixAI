@@ -29,9 +29,11 @@ spec:
       containers:
         - name: mailmatrixai
           # Pinned to an immutable semver tag (not :latest) so Renovate can see
-          # the version and open a bump PR. Must match a published `vX.Y.Z` git
-          # tag — the workflow strips the leading `v` when tagging the image.
-          image: ghcr.io/cs4p/mailmatrixai:0.4.0
+          # the version and bump it — Renovate auto-merges these bumps (see
+          # renovate.json), so new releases flow in without manual edits. Must
+          # match a published `vX.Y.Z` git tag — the workflow strips the leading
+          # `v` when tagging the image.
+          image: ghcr.io/cs4p/mailmatrixai:0.4.2
           imagePullPolicy: IfNotPresent
           ports:
             - name: http

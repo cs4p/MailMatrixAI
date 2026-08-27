@@ -53,6 +53,15 @@
       <input id="ANTHROPIC_API_KEY" name="ANTHROPIC_API_KEY" type="password" value="{{ cfg.ANTHROPIC_API_KEY }}" placeholder="sk-ant-…">
     </div>
 
+    <div class="form-section-label" style="margin-top:1.75rem">Resort</div>
+
+    <div class="form-group form-group-sm">
+      <label for="RESORT_MAX_MESSAGES">Max messages per resort</label>
+      <input id="RESORT_MAX_MESSAGES" name="RESORT_MAX_MESSAGES" type="number" min="0" step="1"
+             value="{{ cfg.RESORT_MAX_MESSAGES }}" placeholder="{{ resort_default }}">
+    </div>
+    <p class="form-hint">How many filed messages one “Resort now” run examines before stopping — the newest are checked first, so a large mailbox can be reconciled over several runs. Blank uses {{ resort_default }}; 0 means no limit.</p>
+
     <div class="config-actions">
       <button type="submit" class="btn btn-primary" id="btn-save">Save</button>
       <button type="button" class="btn btn-secondary" id="btn-test" onclick="testConnection()">Test Connection</button>
@@ -76,6 +85,9 @@
       const val = document.getElementById(k).value;
       if (val) data[k] = val;
     });
+    // Settings (unlike secrets) are sent even when blank, so clearing the box
+    // actually resets it to the default.
+    data.RESORT_MAX_MESSAGES = document.getElementById('RESORT_MAX_MESSAGES').value.trim();
 
     fetch('/api/config', {
       method: 'POST',

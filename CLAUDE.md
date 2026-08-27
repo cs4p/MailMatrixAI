@@ -4,11 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-MailMatrixAI is an email management pipeline with a Flask web UI and three CLI scripts that operate via IMAP. It targets **Fastmail** (Cyrus IMAP) with an app-specific password — historical references to "Gmail" predate that. Gmail support would require OAuth (app passwords are disabled there) and is future work; do not assume Gmail-specific behavior (`[Gmail]/` namespace, All Mail semantics, SMTP auto-saving Sent).
+MailMatrixAI is an email management pipeline with a Flask web UI and four CLI scripts that operate via IMAP. It targets **Fastmail** (Cyrus IMAP) with an app-specific password — historical references to "Gmail" predate that. Gmail support would require OAuth (app passwords are disabled there) and is future work; do not assume Gmail-specific behavior (`[Gmail]/` namespace, All Mail semantics, SMTP auto-saving Sent).
 
 1. **`emailRulesInit.py`** — crawls all `MailMatrixCategories/*` labels, extracts sender addresses from every message, and writes `emailRules.json`
 2. **`sortEmail.py`** — reads `emailRules.json` and files INBOX messages into their matching labels (then removes them from INBOX)
 3. **`emailSummary.py`** — generates a daily markdown report: action-required messages, unmatched INBOX emails with Claude-suggested labels, and a list of what was filed where
+4. **`resortEmail.py`** — occasional cleanup: reconciles every `MailMatrixCategories/*` folder against `emailRules.json` (adds missing copies, removes ones the sender no longer matches). Dry run unless `--apply`
 
 On top of these, `app.py` serves a full **Mail client** at `/mail` (browse folders, read/compose/reply/forward, drag-and-drop filing) via the UID-based `/api/mail/*` endpoints — see below.
 
@@ -50,6 +51,7 @@ python app.py                         # start Flask dev server at http://localho
 # CLI scripts
 python emailRulesInit.py              # rebuild emailRules.json from mailbox history
 python sortEmail.py                   # file today's INBOX messages
+python resortEmail.py                 # dry-run reconcile of all filed mail (--apply to write)
 python emailSummary.py                # summary for today
 python emailSummary.py 2026-06-27     # summary for a specific date
 python emailSummary.py --no-serve     # generate report without launching browser server
@@ -70,6 +72,8 @@ SMTP_SERVER=smtp.fastmail.com
 SMTP_PORT=465
 ANTHROPIC_API_KEY=sk-ant-...
 ```
+
+`RESORT_MAX_MESSAGES` (default `resortEmail.DEFAULT_MAX_MESSAGES` = 2000, `0` = unlimited) rides in the same blob — a setting, not a secret, but it goes through `set_credential` so the CLI inherits it via `os.environ` like everything else.
 
 `emailRules.json` and `.env` are gitignored.
 
@@ -107,6 +111,7 @@ Four pages served at `/`, `/summaries`, `/rules`, `/config`. API endpoints under
 | `GET /config` | Credentials form (reads from Keychain via `get_credential`) |
 | `GET /api/inbox-stats` | Returns `{inbox_count, connected}` (count cached 30s; invalidated by sort/accept) |
 | `POST /api/sort` | Runs `sortEmail.py` as subprocess |
+| `POST /api/resort` | In-process `resortEmail.resort()`; `?dryrun=1` reports, otherwise applies (guarded by `_resort_lock`) |
 | `POST /api/generate-summary` | Runs `emailSummary.py --no-serve` as subprocess |
 | `POST /accept` | Calls `accept_filing()` from `emailSummary.py` |
 | `POST /api/config` | Writes fields to the Keychain via `set_credential` |
@@ -154,6 +159,30 @@ The sorting pipeline only touches labels under `MailMatrixCategories/` (e.g. `Ma
 ### `sortEmail.py` pipeline
 
 `load_rules()` builds two lookup dicts (`email_to_labels`, `domain_to_labels`) from `emailRules.json`. `sort_inbox()` batch-fetches only `BODY[HEADER.FIELDS (FROM)]` via `fetch_many`, then `imap.copy()` to each matching label and `\Deleted` + `expunge` to remove from INBOX. **A message is only flagged `\Deleted` after every COPY returned OK** — a failed copy must never destroy the original (same rule in `accept_filing` and `move_imap_messages`). Uses the lambda default-arg pattern to capture loop variables: `lambda mid=msg_id: imap.copy(mid, ...)`.
+
+### `resortEmail.py` pipeline
+
+Reconciles the folders against the rules, in one direction each way: **remove**
+copies whose sender no longer matches that folder, **add** copies to every
+MailMatrix label the sender now matches. `build_index()` (UID SEARCH +
+`fetch_many(..., use_uid=True)` for `FROM/SUBJECT/DATE/MESSAGE-ID`) →
+`plan_resort()` → `report_from_plan()` → optionally `apply_plan()`.
+
+Unlike `/api/sort`, this runs **in-process** (the caller needs the report back),
+so it is bounded by `resort_max_messages()` and serialized by `_resort_lock`.
+
+Non-negotiable safety rules (tests in `tests/test_resort.py` pin each one):
+- Additions run **before** removals, and a copy is expunged only if the message
+  is still present in a matching label afterwards — a failed COPY can never
+  leave the message deleted everywhere.
+- A sender matching **no** rule is skipped entirely: deleting a rule must never
+  delete mail.
+- Messages with no `Message-ID` are read-only (they can't be deduped across
+  folders, so neither pass is safe).
+- Every add re-checks the target with `UID SEARCH HEADER Message-ID` before
+  COPY, so a truncated index can't create duplicates.
+- Only `MailMatrixCategories/*` folders are ever read or written; every target
+  is re-checked with `validate_label` at write time.
 
 ### `emailSummary.py` pipeline
 

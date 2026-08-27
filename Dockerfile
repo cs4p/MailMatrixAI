@@ -27,8 +27,8 @@ RUN pip install --no-cache-dir \
       "gunicorn>=21.2"
 
 # Application code (only what the server needs at runtime; see .dockerignore).
-COPY app.py commonFunctions.py emailSummary.py sortEmail.py cleanupRules.py \
-     emailRulesInit.py emailRules.schema.json ./
+COPY app.py commonFunctions.py emailSummary.py sortEmail.py resortEmail.py \
+     cleanupRules.py emailRulesInit.py emailRules.schema.json ./
 COPY templates/ templates/
 COPY static/ static/
 
