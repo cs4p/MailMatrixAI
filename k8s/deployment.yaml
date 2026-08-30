@@ -33,7 +33,7 @@ spec:
           # renovate.json), so new releases flow in without manual edits. Must
           # match a published `vX.Y.Z` git tag — the workflow strips the leading
           # `v` when tagging the image.
-          image: ghcr.io/cs4p/mailmatrixai:0.4.15
+          image: ghcr.io/cs4p/mailmatrixai:0.4.16
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
