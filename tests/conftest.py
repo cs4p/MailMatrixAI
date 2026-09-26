@@ -55,6 +55,14 @@ def _token_log(tmp_path, monkeypatch):
     return path
 
 
+@pytest.fixture(autouse=True)
+def _reset_analysis_model(monkeypatch):
+    """set_credential mirrors values into os.environ, so a test that picks an
+    analysis model would leak it into later tests. Registering the key with
+    monkeypatch (blank = default model) makes teardown remove it again."""
+    monkeypatch.setenv("ANALYSIS_MODEL", "")
+
+
 @pytest.fixture
 def mock_imap():
     """Pre-configured IMAP mock with sensible defaults for all method calls."""
