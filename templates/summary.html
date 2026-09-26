@@ -1,0 +1,283 @@
+{% extends "base.html" %}
+{% block title %}Summary — {{ heading }} — MailMatrix AI{% endblock %}
+
+{% block content %}
+<div class="page-header page-header-row">
+  <div>
+    <h1>Email Summary — {{ heading }}</h1>
+    <p class="page-subtitle" id="summary-subtitle">Reading mailbox…</p>
+  </div>
+  <div class="page-header-actions summary-nav">
+    <a class="btn-sm btn-generate" href="/summary/{{ prev_day }}">← Previous day</a>
+    <input type="date" id="summary-date" class="date-input" value="{{ day }}" max="{{ today }}"
+           onchange="goToDate(this.value)" aria-label="Go to date">
+    {% if next_day %}
+    <a class="btn-sm btn-generate" href="/summary/{{ next_day }}">Next day →</a>
+    {% endif %}
+  </div>
+</div>
+
+<div class="action-row">
+  <button class="btn btn-secondary" id="btn-sort-refresh" onclick="sortAndRefresh()">
+    <span class="btn-icon">↓</span> Sort inbox, then refresh
+  </button>
+  <button class="btn btn-secondary" id="btn-reanalyze" onclick="loadSummary(true)"
+          title="Ask Claude again, ignoring cached results">
+    <span class="btn-icon">↻</span> Re-analyze
+  </button>
+</div>
+
+<div class="stat-grid">
+  <div class="stat-card">
+    <div class="stat-num blue" id="stat-processed">—</div>
+    <div class="stat-label">Processed</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-num red" id="stat-attention">—</div>
+    <div class="stat-label">Need Attention</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-num orange" id="stat-unfiled">—</div>
+    <div class="stat-label">Unfiled</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-num green" id="stat-filed">—</div>
+    <div class="stat-label">Filed</div>
+  </div>
+</div>
+
+<div id="summary-error" class="card inbox-section" hidden>
+  <div class="error-note" id="summary-error-msg"></div>
+</div>
+
+<div class="card inbox-section">
+  <h2 class="inbox-section-title">Need Attention</h2>
+  <div id="attention-body"><p class="empty">Waiting for the mailbox…</p></div>
+</div>
+
+<div class="card inbox-section">
+  <h2 class="inbox-section-title">Unfiled</h2>
+  <p class="section-desc">In INBOX with no matching filing rule. Accept a suggestion to move the sender's mail and add a rule.</p>
+  <div id="analysis-progress" class="summary-progress" hidden>
+    <span class="inbox-loading-text" id="analysis-progress-text">Analyzing…</span>
+    <div class="progress-bar-track">
+      <div class="progress-bar-fill" id="analysis-progress-fill" style="width:0%"></div>
+    </div>
+    <button class="btn-sm btn-generate" id="btn-cancel" onclick="cancelAnalysis()">Cancel</button>
+  </div>
+  <div id="unfiled-body"><p class="empty">Waiting for the mailbox…</p></div>
+</div>
+
+<div class="card inbox-section">
+  <h2 class="inbox-section-title">Filed</h2>
+  <p class="section-desc">Filed into MailMatrixCategories folders.</p>
+  <div id="filed-body"><p class="empty">Waiting for the mailbox…</p></div>
+</div>
+
+<div id="toast" class="toast" aria-live="polite"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const DAY = {{ day|tojson }};
+  const MODEL_LABELS = {{ model_labels|tojson }};
+  let _jobId = null;
+  let _pollTimer = null;
+  let _day = null;
+
+  loadSummary(false);
+
+  function goToDate(value) {
+    if (value) location.href = '/summary/' + encodeURIComponent(value);
+  }
+
+  function setBusy(busy) {
+    document.getElementById('btn-sort-refresh').disabled = busy;
+    document.getElementById('btn-reanalyze').disabled = busy;
+  }
+
+  function stopPolling() {
+    clearInterval(_pollTimer);
+    _pollTimer = null;
+  }
+
+  async function loadSummary(force) {
+    stopPolling();
+    if (_jobId) postJSON(`/api/summary/cancel/${_jobId}`).catch(() => {});
+    _jobId = null;
+    _day = null;
+    setBusy(true);
+    document.getElementById('summary-error').hidden = true;
+    document.getElementById('summary-subtitle').textContent = 'Reading mailbox…';
+    try {
+      const data = await postJSON(`/api/summary/${DAY}/start`, { force: !!force });
+      if (!data.ok) { showError(data.error || 'Could not start the summary'); return; }
+      _jobId = data.job_id;
+      _pollTimer = setInterval(poll, 700);
+      poll();
+    } catch (err) {
+      showError(err.message);
+    }
+  }
+
+  async function poll() {
+    const jobId = _jobId;
+    if (!jobId) return;
+    let data;
+    try {
+      const resp = await fetch(`/api/summary/status/${jobId}`);
+      data = await resp.json();
+      if (!resp.ok) { stopPolling(); showError(data.error || 'Summary failed'); return; }
+    } catch (err) {
+      stopPolling(); showError(err.message); return;
+    }
+    if (jobId !== _jobId) return;  // superseded by a newer load
+
+    if (data.day && !_day) {
+      _day = data.day;
+      renderDay(_day);
+    }
+    if (data.status === 'running') {
+      if (_day) setProgress(data.progress || {});
+      return;
+    }
+
+    stopPolling();
+    setBusy(false);
+    document.getElementById('analysis-progress').hidden = true;
+    if (data.status === 'done') {
+      renderAnalysis(data.result.day, data.result.analysis);
+    } else if (data.status === 'cancelled') {
+      document.getElementById('summary-subtitle').textContent = 'AI analysis cancelled';
+      document.getElementById('attention-body').innerHTML = '<p class="empty">Analysis cancelled.</p>';
+    } else {
+      showError((data.result && data.result.error) || 'Summary failed');
+    }
+  }
+
+  function setProgress(p) {
+    const box = document.getElementById('analysis-progress');
+    if (p.phase !== 'analyzing' || !p.total) { box.hidden = true; return; }
+    box.hidden = false;
+    document.getElementById('btn-cancel').disabled = false;
+    document.getElementById('analysis-progress-fill').style.width =
+      Math.round((p.current / p.total) * 100) + '%';
+    document.getElementById('analysis-progress-text').textContent =
+      `Analyzing ${p.current} / ${p.total} new senders with Claude…`;
+  }
+
+  async function cancelAnalysis() {
+    if (!_jobId) return;
+    document.getElementById('btn-cancel').disabled = true;
+    try { await postJSON(`/api/summary/cancel/${_jobId}`); } catch (err) { /* next poll reports */ }
+  }
+
+  function showError(msg) {
+    stopPolling();
+    setBusy(false);
+    document.getElementById('analysis-progress').hidden = true;
+    document.getElementById('summary-error').hidden = false;
+    document.getElementById('summary-error-msg').textContent = 'Error: ' + msg;
+    document.getElementById('summary-subtitle').textContent = 'Summary unavailable';
+  }
+
+  function setStats(filed, unfiled, attention) {
+    document.getElementById('stat-processed').textContent = filed + unfiled;
+    document.getElementById('stat-filed').textContent = filed;
+    document.getElementById('stat-unfiled').textContent = unfiled;
+    document.getElementById('stat-attention').textContent = attention == null ? '…' : attention;
+  }
+
+  // Mailbox data arrives before the AI step: show it right away.
+  function renderDay(day) {
+    setStats(day.counts.filed, day.counts.unfiled, null);
+    document.getElementById('summary-subtitle').textContent =
+      `${day.counts.senders} unfiled sender${day.counts.senders === 1 ? '' : 's'} · analyzing…`;
+    document.getElementById('attention-body').innerHTML = '<p class="empty">Waiting for AI analysis…</p>';
+    document.getElementById('unfiled-body').innerHTML = renderUnfiled(day, {});
+    document.getElementById('filed-body').innerHTML = renderFiled(day.filed);
+  }
+
+  function renderAnalysis(day, analysis) {
+    _day = day;
+    const suggestions = {};
+    (analysis.filing_suggestions || []).forEach(s => { suggestions[s.index] = s; });
+    const actions = analysis.action_required || [];
+
+    setStats(day.counts.filed, day.counts.unfiled, analysis.error ? null : actions.length);
+    let attention = actions.length
+      ? renderActionCards(actions)
+      : '<p class="empty">No emails require immediate action.</p>';
+    if (analysis.error) {
+      attention = `<div class="error-note">AI analysis unavailable: ${esc(analysis.error)}</div>` + attention;
+    }
+    document.getElementById('attention-body').innerHTML = attention;
+    document.getElementById('unfiled-body').innerHTML = renderUnfiled(day, suggestions);
+    document.getElementById('filed-body').innerHTML = renderFiled(day.filed);
+
+    const parts = [`${day.counts.senders} unfiled sender${day.counts.senders === 1 ? '' : 's'}`];
+    if (analysis.analyzed_at) parts.push('analyzed ' + ago(analysis.analyzed_at));
+    parts.push(MODEL_LABELS[analysis.model] || analysis.model);
+    if (analysis.cached) parts.push(`${analysis.cached} from cache`);
+    document.getElementById('summary-subtitle').textContent = parts.join(' · ');
+  }
+
+  function renderUnfiled(day, suggestions) {
+    if (!day.inbox.length) return '<p class="empty">No unfiled emails for this date.</p>';
+    return day.inbox.map((em, i) => renderSenderCard(em, i + 1, suggestions[i + 1], day.labels)).join('');
+  }
+
+  function renderFiled(filed) {
+    const labels = Object.keys(filed || {}).sort();
+    if (!labels.length) return '<p class="empty">Nothing was filed on this date.</p>';
+    return labels.map(label => `
+      <div class="filed-group">
+        <h3>${esc(label.replace('MailMatrixCategories/', ''))} <span class="count-badge">${filed[label].length}</span></h3>
+        ${filed[label].map(em => `
+          <div class="filed-item"><strong>${esc(em.subject || '(no subject)')}</strong>
+            — ${esc(em.from_display || em.from_addr || '')}</div>`).join('')}
+      </div>`).join('');
+  }
+
+  function ago(epochSeconds) {
+    const mins = Math.floor((Date.now() / 1000 - epochSeconds) / 60);
+    if (mins < 1) return 'just now';
+    if (mins < 60) return `${mins} min ago`;
+    const hours = Math.floor(mins / 60);
+    if (hours < 24) return `${hours} h ago`;
+    return new Date(epochSeconds * 1000).toLocaleDateString();
+  }
+
+  // Accepting a suggestion moves all of that sender's INBOX mail: drop the
+  // card and move its messages from Unfiled to Filed in the stats.
+  document.addEventListener('mm:accepted', (event) => {
+    const card = event.target.closest('.inbox-card');
+    if (!card || !_day) return;
+    const em = _day.inbox.find(e => e.from_addr === card.dataset.from);
+    const moved = em ? (em.count || 1) : 1;
+    _day.counts.unfiled = Math.max(0, _day.counts.unfiled - moved);
+    _day.counts.filed += moved;
+    _day.counts.senders = Math.max(0, _day.counts.senders - 1);
+    _day.inbox = _day.inbox.filter(e => e !== em);
+    const attention = document.getElementById('stat-attention').textContent;
+    setStats(_day.counts.filed, _day.counts.unfiled, /^\d+$/.test(attention) ? attention : null);
+    showToast('Moved ' + moved + ' message' + (moved === 1 ? '' : 's') + ' to ' +
+              event.detail.label.replace('MailMatrixCategories/', ''), 'success');
+    setTimeout(() => card.remove(), 1200);
+  });
+
+  async function sortAndRefresh() {
+    setBusy(true);
+    document.getElementById('summary-subtitle').textContent = 'Sorting inbox…';
+    try {
+      const data = await postJSON('/api/sort');
+      if (!data.ok) {
+        showToast('Sort failed: ' + String(data.error || 'error').split('\n')[0].slice(0, 120), 'error');
+      }
+    } catch (err) {
+      showToast('Sort failed: ' + err.message, 'error');
+    }
+    loadSummary(false);
+  }
+</script>
+{% endblock %}

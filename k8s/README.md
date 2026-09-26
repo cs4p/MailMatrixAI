@@ -16,7 +16,7 @@ to the GitHub Container Registry (GHCR) by
 ```
 k8s/
 ├── secret.example.yaml   # credentials template → copy to secret.yaml
-├── pvc.yaml              # persistent storage for rules + summaries
+├── pvc.yaml              # persistent storage for rules + token-usage log
 ├── deployment.yaml       # the app pod
 ├── service.yaml          # ClusterIP service
 └── ingress.yaml          # OPTIONAL external access (needs auth + TLS)
@@ -194,7 +194,7 @@ kubectl create secret docker-registry ghcr-pull \
 
 ## How state is stored
 
-`emailRules.json` (learned filing rules) and the generated HTML summaries are
+`emailRules.json` (learned filing rules) and `logs/token_usage.jsonl` are
 written to `MAILMATRIX_DATA_DIR` (`/data` in the image), backed by the
 `mailmatrixai-data` PVC — so they survive pod restarts. Credentials come only
 from the Secret; nothing sensitive is written to the volume.
@@ -203,6 +203,6 @@ from the Secret; nothing sensitive is written to the volume.
 
 ```bash
 kubectl delete -f k8s/service.yaml -f k8s/deployment.yaml
-kubectl delete -f k8s/pvc.yaml          # deletes stored rules + summaries
+kubectl delete -f k8s/pvc.yaml          # deletes stored rules + token log
 kubectl delete secret mailmatrixai-credentials
 ```

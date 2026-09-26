@@ -57,6 +57,8 @@ async function handleAccept(btn) {
     if (data.ok) {
       const shortLabel = label.replace('MailMatrixCategories/', '');
       sug.innerHTML = '<span class="accepted-msg">✓ Moved to ' + esc(shortLabel) + ' · emailRules.json updated</span>';
+      // Let the page react (the live summary drops the sender's card).
+      sug.dispatchEvent(new CustomEvent('mm:accepted', { bubbles: true, detail: { fromAddr, label } }));
     } else {
       btn.disabled = false;
       btn.textContent = 'Accept';
@@ -69,4 +71,49 @@ async function handleAccept(btn) {
     if (select) select.disabled = false;
     alert('Error: ' + err.message);
   }
+}
+
+// ── Shared analysis cards (AI Inbox + live summary) ─────────────────────────
+// Everything interpolated here is untrusted mail content — always esc()/escAttr().
+
+function renderActionCards(items) {
+  return items.map(item => `
+    <div class="inbox-card action-card">
+      <div class="inbox-subject">${esc(item.subject || '(no subject)')}</div>
+      <div class="inbox-meta">From: ${esc(item.from || '')}</div>
+      <div class="action-reason">${esc(item.reason || '')}</div>
+    </div>`).join('');
+}
+
+// One unfiled sender: subject/meta/preview plus, when Claude suggested a
+// label, a label picker and an Accept button (handled by handleAccept).
+function renderSenderCard(em, idx, sug, labels) {
+  const count = (em.count || 1) > 1 ? `<span class="count-badge">${esc(em.count)}×</span>` : '';
+  const preview = em.body_snippet
+    ? `<div class="inbox-preview">${esc(em.body_snippet.slice(0, 200))}</div>`
+    : '';
+
+  let sugHtml = '';
+  if (sug && sug.suggested_label) {
+    const allOpts = [...labels];
+    if (!allOpts.includes(sug.suggested_label)) allOpts.unshift(sug.suggested_label);
+    const opts = allOpts.map(lbl =>
+      `<option value="${escAttr(lbl)}"${lbl === sug.suggested_label ? ' selected' : ''}>${esc(lbl.replace('MailMatrixCategories/', ''))}</option>`
+    ).join('');
+    const newBadge = sug.is_new_label ? ' <span class="new-badge">new</span>' : '';
+    const reason = sug.reason ? `<span class="suggestion-reason">${esc(sug.reason)}</span>` : '';
+    sugHtml = `<div class="suggestion">
+      <select class="label-select">${opts}</select>${newBadge}
+      ${reason}
+      <button class="accept-btn" data-from="${escAttr(em.from_addr)}" onclick="handleAccept(this)">Accept</button>
+    </div>`;
+  }
+
+  return `<div class="inbox-card" id="inbox-card-${idx}" data-from="${escAttr(em.from_addr)}">
+    <div class="inbox-subject">${esc(em.subject || '(no subject)')} ${count}</div>
+    <div class="inbox-meta">From: ${esc(em.from_display || em.from_addr)}</div>
+    <div class="inbox-meta">Date: ${esc(em.date || '')}</div>
+    ${preview}
+    ${sugHtml}
+  </div>`;
 }

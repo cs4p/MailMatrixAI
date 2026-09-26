@@ -289,6 +289,119 @@ Remaining ideas:
 
 ---
 
+## Dynamic daily summary (replace saved summary files) — ✅ shipped (2026-09-25)
+
+Implemented as planned: `/summary/<date>` (live page + background job with
+mailbox data published before the AI step), `collect_day` / `count_day` /
+`analyze_senders` + in-memory `ANALYSIS_CACHE` in `emailSummary.py`, shared by
+`/inbox`; text CLI; the generate/save path, `serve_report`, sidecars and the
+`/summaries` list are gone. Differences from the plan below:
+- Counts are one endpoint for many days (`/api/summary/counts?dates=...`, one
+  IMAP connection) rather than per-day calls.
+- `/summaries` and old `/summaries/email_summary_<date>.html` links redirect to
+  the live page instead of 404ing.
+- The analysis cache stayed in memory (decision point 4).
+- Old files in `emailSummary/` (and `/data/emailSummary` on the PVC) are left
+  in place; delete them by hand once you no longer want them.
+
+
+Replace the generate-and-save summary process with a summary page that is built
+on the fly each time it's opened, reflecting the mailbox as it is *now*
+instead of a snapshot from when someone last clicked Generate.
+
+**What exists today (to be replaced):**
+- `emailSummary.generate_report()` (`emailSummary.py:678`) optionally runs
+  `sortEmail.py`, fetches filed + INBOX mail for one date, calls
+  `analyze_with_claude` once for the whole INBOX, then writes
+  `emailSummary/email_summary_YYYY-MM-DD.html` (built as a string by
+  `build_html_report`, `:445`) plus a `.json` stats sidecar.
+- The web UI runs that as a subprocess (`POST /api/generate-summary`,
+  `app.py:405`, 300s timeout). The dashboard, the `/summaries` list,
+  `/summaries/<filename>`, and `/api/summaries/unfiled-dates` (the "Refresh
+  unfiled" button) all read the files back via `summary_files` /
+  `dashboard_stats` (`commonFunctions.py:718`/`762`).
+- The CLI can also serve the file on a throwaway local HTTP server with its own
+  `/accept` handler (`serve_report`, `emailSummary.py:787`).
+- Problem: reports go stale the moment mail is filed or accepted, "Refresh
+  unfiled" exists only to regenerate them, and the files pile up on disk (and on
+  the PVC in the container).
+
+### Plan
+
+1. **Split data from presentation.** Refactor `generate_report` into
+   `collect_day(imap, target_date) -> {labels, filed_emails, inbox_emails}`
+   (IMAP only, no AI) and `build_summary(target_date, *, analysis_cache) -> dict`
+   (collect + analyze), returning plain data — no HTML, no disk writes. Retire
+   `build_html_report`'s string-built HTML.
+2. **Live page `GET /summary/<YYYY-MM-DD>`** (plus `/summary` → today), rendered
+   by a Jinja template `templates/summary.html` extending `base.html`.
+   Autoescaping replaces the manual `_e()` escaping. Subjects and previews
+   are untrusted text: never render message HTML here (same rule as the mail
+   client). The page loads instantly with the filed-mail section, which needs
+   only IMAP; the AI section fills in afterwards.
+3. **AI analysis as a background job**, reusing the `/inbox` machinery
+   (`_analyze_inbox` / `_run_inbox_job`, `app.py:642`/`772`):
+   `POST /api/summary/<date>/analyze` → job id; poll status; cancel. This also
+   gives summaries the batched analysis (`CLAUDE_BATCH_SIZE`) that `/inbox`
+   already has instead of one giant call. Fold the two into one code path.
+4. **Don't pay for AI on every page view — cache the analysis, not the page.**
+   An in-process cache keyed by `(date, model, sender)` → action/filing result,
+   so re-opening a summary only analyzes senders it hasn't seen yet (usually
+   zero). This fits the token-usage goal, and the token log shows whether it
+   works. Show "analyzed 5 min ago · Haiku 4.5" and a **Re-analyze** button that
+   bypasses the cache. Decide: in-memory only (lost on restart, simplest; no
+   files at all) vs. a small JSON cache under `DATA_DIR` (survives restarts).
+   Default to in-memory unless restarts make it costly.
+5. **Accept stays in place.** Accepting a filing suggestion POSTs to the
+   existing `/accept`; on success, drop that sender's card from the live page (no
+   regenerate step). Remove the duplicate `/accept` handler in `serve_report`.
+6. **Sorting before a summary.** The file flow always ran `sortEmail.py` first.
+   Don't do that on every page view (slow, and it changes the mailbox as a side
+   effect of *reading*). Offer a "Sort inbox, then refresh" button on the page;
+   the dashboard's Sort Inbox button already exists.
+7. **Dashboard and `/summaries`.**
+   - Replace the Generate/View buttons with plain links to `/summary/<date>`.
+   - Replace the sidecar-backed per-day stats (processed / need attention /
+     unfiled) with cheap live counts: IMAP `SEARCH ON` counts, no AI, cached
+     ~5 min, fetched per card via `GET /api/summary/<date>/counts` so the
+     page doesn't block on IMAP.
+   - "Need attention" needs AI, so show it only once that day's analysis is
+     cached.
+   - Replace the "Reports / Saved summaries" stat card (e.g. with today's
+     unfiled count).
+   - Remove the "Refresh unfiled" button and `/api/summaries/unfiled-dates`;
+     live pages make them unnecessary.
+8. **Remove the file path:** `POST /api/generate-summary`, `/summaries/<filename>`,
+   `summary_files`, the sidecar code, `SUMMARY_DIR`, `serve_report`/`_free_port`,
+   and the `--no-serve` flag. Existing files under `emailSummary/` (and
+   `/data/emailSummary` on the PVC) are left alone: never auto-delete user data.
+   Note the manual cleanup in the release notes.
+9. **CLI.** `python emailSummary.py [date]` prints a plain-text/markdown summary
+   to stdout (same data from `build_summary`) instead of writing HTML and serving
+   it. Useful for cron/email later ("schedule summaries" in General Ideas).
+10. **Tests.** Replace the file/sidecar tests in `tests/test_summary.py` and the
+    `/api/generate-summary` block in `tests/test_app.py`. Cover:
+    - `collect_day` against batched-FETCH mocks;
+    - the analysis cache (a second view makes no Claude call; a new sender
+      analyzes only that sender; Re-analyze bypasses the cache);
+    - `/summary/<date>` rendering and escaping (a `<script>` subject renders
+      as text);
+    - invalid dates → 400;
+    - the analyze job start/status/cancel;
+    - counts caching;
+    - accept removing the card;
+    - the CLI stdout output;
+    - no file is ever written under `SUMMARY_DIR`.
+
+**Natural follow-ups:** the same view with a range instead of one date
+(`/summary?range=24h|7d|30d`) covers three of the General Ideas below (24h /
+7-day / 30-day views by category), plus the custom category sort order and the
+"open full email in a modal" link. The modal can reuse `/api/mail/message` and
+its sandboxed-iframe rendering. `SEARCH ON` uses the IMAP server's date, so the
+time-zone setting idea matters here too.
+
+---
+
 ## resort function — ✅ shipped (2026-08-25)
 
 Implemented as `resortEmail.py` + `POST /api/resort` + the **Resort Now…**

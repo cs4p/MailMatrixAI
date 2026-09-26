@@ -715,92 +715,35 @@ def merge_rules(existing: dict, incoming: dict) -> dict:
     return summary
 
 
-def summary_files(summary_dir: Union[str, Path]) -> List[dict]:
-    """List saved email_summary_*.html reports, newest first.
+def dashboard_stats(rules_data: dict, today: date) -> dict:
+    """Aggregate the label/rule counts and the 7-day summary grid for the Dashboard.
 
-    Each entry also carries processed/need_attention/unfiled/filed counts and a
-    human-readable generated_at label when a matching .json sidecar (written by
-    emailSummary.py's generate_report()) exists — older reports predating that
-    sidecar just won't have these keys.
+    Per-day mail counts are not computed here — the dashboard fetches them
+    live from /api/summary/counts.
     """
-    summary_dir = Path(summary_dir)
-    files = []
-    if summary_dir.exists():
-        for p in sorted(summary_dir.glob("email_summary_*.html"), reverse=True):
-            date_part = p.stem.replace("email_summary_", "")
-            try:
-                d = date.fromisoformat(date_part)
-                label = d.strftime("%B %d, %Y")
-            except ValueError:
-                label = date_part
-            entry = {"filename": p.name, "label": label, "date": date_part}
-
-            meta_path = p.with_suffix(".json")
-            meta = None
-            if meta_path.exists():
-                try:
-                    with open(meta_path, encoding="utf-8") as f:
-                        meta = json.load(f)
-                except (json.JSONDecodeError, OSError):
-                    meta = None
-            if meta is not None:
-                entry["processed"] = meta.get("processed")
-                entry["need_attention"] = meta.get("need_attention")
-                entry["unfiled"] = meta.get("unfiled")
-                entry["filed"] = meta.get("filed")
-                generated_at = meta.get("generated_at")
-                if generated_at:
-                    try:
-                        entry["generated_at"] = datetime.fromisoformat(generated_at).strftime("%b %d, %Y at %I:%M %p")
-                    except ValueError:
-                        entry["generated_at"] = generated_at
-
-            files.append(entry)
-    return files
-
-
-def dashboard_stats(rules_data: dict, summary_dir: Union[str, Path], today: date) -> dict:
-    """Aggregate the label/rule/summary counts and 7-day summary grid for the Dashboard."""
     labels = rules_data.get("labels", [])
     label_count = len(labels)
     rules_count = sum(
         len(entry.get("emailAddresses", [])) + len(entry.get("emailDomains", []))
         for entry in labels
     )
-    all_summaries = summary_files(summary_dir)
-    summary_count = len(all_summaries)
-    by_date = {f["date"]: f for f in all_summaries}
 
     recent_days = []
     for i in range(7):
         d = today - timedelta(days=i)
-        date_str = d.isoformat()
         if i == 0:
             label = "Today"
         elif i == 1:
             label = "Yesterday"
         else:
             label = f"{d.strftime('%a, %b')} {d.day}"
-        summary = by_date.get(date_str)
-        recent_days.append({
-            "date": date_str,
-            "label": label,
-            "has_summary": summary is not None,
-            "filename": summary["filename"] if summary else None,
-            "processed": summary.get("processed") if summary else None,
-            "need_attention": summary.get("need_attention") if summary else None,
-            "unfiled": summary.get("unfiled") if summary else None,
-            "generated_at": summary.get("generated_at") if summary else None,
-        })
-
-    custom_default = (today - timedelta(days=7)).isoformat()
+        recent_days.append({"date": d.isoformat(), "label": label})
 
     return {
         "label_count": label_count,
         "rules_count": rules_count,
-        "summary_count": summary_count,
         "recent_days": recent_days,
-        "custom_default": custom_default,
+        "custom_default": (today - timedelta(days=7)).isoformat(),
     }
 
 
