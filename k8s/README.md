@@ -4,6 +4,15 @@ These manifests run the MailMatrixAI web app from the container image published
 to the GitHub Container Registry (GHCR) by
 [`.github/workflows/docker-publish.yml`](../.github/workflows/docker-publish.yml).
 
+> **The lab cluster does not deploy from these files.** The live
+> `mailmatrixai` deployment is managed by Argo CD from
+> [`cs4p/homelab`](https://github.com/cs4p/homelab)
+> (`argocd/manifests/mailmatrixai/`), pinned as `X.Y.Z@sha256:<index digest>`,
+> with `selfHeal` on — so a `kubectl apply`/`set image` from here is reverted.
+> To roll out a release there, bump that pin (Renovate opens a PR in homelab
+> for each new release; it does not auto-merge). The manifests below are a
+> standalone reference deployment for any other cluster.
+
 ```
 k8s/
 ├── secret.example.yaml   # credentials template → copy to secret.yaml
@@ -41,18 +50,27 @@ publishes the image tag `0.3.0`.
 what lets Renovate (configured in [`renovate.json`](../renovate.json)) see the
 running version and open a bump PR when a newer one is published. Renovate is
 set to **auto-merge** that PR once its docker-build check passes, so new releases
-land in `deployment.yaml` on `main` automatically — you only re-apply/roll out
-to the cluster (or your GitOps controller does). Don't replace the pin with
+land in `deployment.yaml` on `main` automatically. Don't replace the pin with
 `latest` — a floating tag is invisible to Renovate and would break this.
 
 ### Cutting a release
 
-1. Bump `version` in `pyproject.toml`.
-2. Tag and push: `git tag v0.4.0 && git push origin v0.4.0`.
-3. CI publishes `ghcr.io/cs4p/mailmatrixai:0.4.0` (plus `0.4`).
-4. Renovate opens a PR bumping the `image:` pin in `k8s/deployment.yaml` and
-   auto-merges it once the build check is green (or bump it by hand). Then
-   `kubectl apply -f k8s/deployment.yaml` to roll it out to the cluster.
+Releases are automatic. Every push to `main` (a merged PR or a direct commit)
+runs [`version-bump.yml`](../.github/workflows/version-bump.yml), which bumps
+`pyproject.toml` + `electron/package.json`, commits with `[skip version]`, and
+pushes a `vX.Y.Z` tag; the tag push builds and publishes
+`ghcr.io/cs4p/mailmatrixai:X.Y.Z` (plus `X.Y`).
+
+- Patch by default; put `#minor` or `#major` in the head commit message (for a
+  PR merge, the merge commit) for a bigger bump.
+- `[skip version]` in the head commit message skips the bump — and the
+  `latest`/`main` image rebuild — for a push that shouldn't be a release.
+- Pushes that only touch `k8s/` never cut a release (`paths-ignore` in both
+  workflows). That is load-bearing: Renovate's auto-merged pin bump lands on
+  `main` after every release, and if it cut a release of its own, the new image
+  would get pinned, cutting another release, forever.
+
+### Pulling the image
 
 - **Public package** (default once you make it public): no pull secret needed.
 - **Private package:** create a pull secret and reference it (see
@@ -138,6 +156,8 @@ secret, and an auth mechanism) and `kubectl apply -f k8s/ingress.yaml`.
 ---
 
 ## Updating
+
+(For the lab cluster, see the homelab note at the top instead.)
 
 Renovate keeps the pin current: it auto-merges the bump PR into `main`, so
 `k8s/deployment.yaml` in git already carries the newest tag. Roll it out with

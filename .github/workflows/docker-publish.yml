@@ -6,6 +6,11 @@ on:
   push:
     branches: [main]
     tags: ["v*.*.*"]
+    # Manifest-only pushes (Renovate's k8s/ image-pin bumps) don't change the
+    # image, so don't rebuild latest/main for them. GitHub never evaluates path
+    # filters for tag pushes, so vX.Y.Z builds are unaffected.
+    paths-ignore:
+      - "k8s/**"
   pull_request:
     branches: [main]
   workflow_dispatch:

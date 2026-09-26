@@ -21,6 +21,13 @@ name: Bump version on merge to main
 on:
   push:
     branches: [main]
+    # A push that only touches k8s/ is Renovate auto-merging the image-pin bump
+    # for a release that was just published. Cutting a release for it would
+    # publish a new image, which Renovate pins again, which cuts another
+    # release... — an endless loop (it took the version from 0.4.2 to 0.4.101).
+    # Manifest-only changes don't change the image, so they never need a bump.
+    paths-ignore:
+      - "k8s/**"
 
 permissions:
   contents: write        # PAT does the push; this is a belt-and-suspenders default

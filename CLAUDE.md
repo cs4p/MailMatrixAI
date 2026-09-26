@@ -48,18 +48,26 @@ ANTHROPIC_API_KEY=sk-ant-...
 build that is only reachable as `latest` or `sha-…`. Automated update tools
 (Renovate) can only detect a new release from an immutable `X.Y.Z` tag.
 
-- Release flow: bump `version` in `pyproject.toml` → push a `vX.Y.Z` git tag →
-  `.github/workflows/docker-publish.yml` publishes `X.Y.Z` and `X.Y` to
-  `ghcr.io/cs4p/mailmatrixai`. `docker/metadata-action` strips the leading `v`,
-  so git tag `v0.3.0` → image tag `0.3.0`.
-- Deployment manifests pin the exact `X.Y.Z` tag (`k8s/deployment.yaml`), not
-  `latest`. `renovate.json` points Renovate's `kubernetes` manager at
-  `k8s/**/*.yaml` — that manager has no default file matching, so removing the
-  config silently disables bump PRs.
+- Release flow is automatic: every push to `main` runs `version-bump.yml`, which
+  bumps `pyproject.toml` + `electron/package.json` (patch; `#minor`/`#major` in
+  the head commit message), commits with `[skip version]`, and pushes a
+  `vX.Y.Z` tag → `docker-publish.yml` publishes `X.Y.Z` and `X.Y` to
+  `ghcr.io/cs4p/mailmatrixai` (`docker/metadata-action` strips the leading `v`).
+  Put `[skip version]` in a commit message to push to `main` without a release.
+- `k8s/deployment.yaml` pins the exact `X.Y.Z` tag, not `latest`.
+  `renovate.json` points Renovate's `kubernetes` manager at `k8s/**/*.yaml` —
+  that manager has no default file matching, so removing the config silently
+  disables bump PRs. Renovate auto-merges those pin bumps.
+- **Never remove the `k8s/**` `paths-ignore` from `version-bump.yml` /
+  `docker-publish.yml`.** Without it, each auto-merged pin bump cuts a new
+  release, which Renovate pins again — an endless release loop.
 - Version-bump commits touch `pyproject.toml` and `electron/package.json` only.
-  The `k8s/deployment.yaml` pin advances **after** CI publishes the image (via
-  the Renovate PR) — bumping it in the same commit would point the cluster at a
-  tag that does not exist yet.
+  The pin advances **after** CI publishes the image (via the Renovate PR) —
+  bumping it in the same commit would point at a tag that does not exist yet.
+- **The live lab deployment is not `k8s/` here.** Argo CD deploys it from
+  `cs4p/homelab` (`argocd/manifests/mailmatrixai/`, pinned
+  `X.Y.Z@sha256:<index digest>`, `selfHeal` on — `kubectl apply` from this repo
+  gets reverted). Deploying a release = bumping that pin in homelab.
 
 ## Architecture
 
