@@ -264,24 +264,28 @@ spam-filtered count (needs item 1) and cost estimates (tokens only for now).
 - **Tests:** the helper writes the expected line from a mocked `response.usage`;
   the endpoint aggregates a fixture file; a missing file returns zeros.
 
-### 3. Default to lower-cost models for email analysis
+### 3. Default to lower-cost models for email analysis — ✅ shipped (2026-09-25)
 
-- Make the model a setting: `ANALYSIS_MODEL` in the Keychain blob with a
-  `/config` dropdown, defaulting to a cheaper model (Haiku 4.5 —
-  `claude-haiku-4-5-20251001` — or Sonnet 5 — `claude-sonnet-5`) instead of
-  Opus. Check current pricing and model IDs when implementing.
-- Classification and filing suggestions are simple, structured tasks: drop
-  adaptive thinking by default (or make it a toggle) and cut `max_tokens` from
-  64000 to something sized to the JSON output, e.g. ~200 tokens per email plus
-  headroom.
-- Optional escalation: run the cheap model first and re-run only low-confidence
-  or invalid-JSON results on the stronger model.
-- Also shrink the prompt: body snippets are `BODY[TEXT]<0.2000>`, so try a
-  smaller byte range and strip quoted replies / signatures; put the fixed
-  instructions + label list first so prompt caching can apply across runs.
-- Compare before/after with the token-usage log (item 2).
-- **Tests:** the configured model reaches `messages.stream`; an unset setting
-  falls back to the default; the thinking toggle is respected.
+Implemented: `ANALYSIS_MODEL` setting (Keychain blob, `/config` dropdown,
+validated server-side), defaulting to Claude Haiku 4.5 (`claude-haiku-4-5`,
+$1/$5 per MTok vs $5/$25 for Opus 4.8). `ANALYSIS_MODELS` in `emailSummary.py`
+carries per-model request params: Haiku with no thinking (it doesn't support
+adaptive thinking), Sonnet 5 (`claude-sonnet-5`, $2/$10) with adaptive thinking at
+`low` effort, Opus 4.8 with the previous adaptive setup. The token log records
+the model actually used.
+
+Deliberately not done:
+- Cutting `max_tokens` (64000): only generated tokens are billed, so a lower
+  cap saves nothing and risks truncating the JSON on a busy day.
+- Prompt caching: the fixed instructions are far below the minimum cacheable
+  prefix, so there is nothing worth caching yet.
+
+Remaining ideas:
+- Optional escalation: run the cheap model first and re-run only invalid-JSON
+  (or low-confidence) results on a stronger model.
+- Shrink the prompt further: the prompt already caps previews at 300 chars, but
+  stripping quoted replies / signatures would make those chars count.
+- Compare quality and tokens per email before/after with the token-usage log.
 
 ---
 

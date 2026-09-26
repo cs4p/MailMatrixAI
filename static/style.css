@@ -833,7 +833,8 @@ a:hover { text-decoration: underline; }
   color: var(--text);
 }
 
-.form-group input {
+.form-group input,
+.form-group select {
   padding: .6rem .875rem;
   border-radius: var(--radius-sm);
   border: 1px solid rgba(0,0,0,.14);
@@ -844,7 +845,8 @@ a:hover { text-decoration: underline; }
   transition: border-color .15s, box-shadow .15s;
 }
 
-.form-group input:focus {
+.form-group input:focus,
+.form-group select:focus {
   border-color: var(--blue);
   box-shadow: 0 0 0 3px rgba(0,102,204,.12);
   background: white;

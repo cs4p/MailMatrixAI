@@ -9,7 +9,9 @@ import httpx
 import pytest
 
 from emailSummary import (
-    ANALYSIS_MODEL,
+    ANALYSIS_MODELS,
+    DEFAULT_ANALYSIS_MODEL,
+    analysis_model,
     ReportGenerationError,
     accept_filing,
     analyze_with_claude,
@@ -356,13 +358,72 @@ def test_analyze_with_claude_writes_token_usage_record(_token_log):
     assert len(lines) == 1
     rec = json.loads(lines[0])
     assert rec["caller"] == "inbox-analyze"
-    assert rec["model"] == ANALYSIS_MODEL
+    assert rec["model"] == DEFAULT_ANALYSIS_MODEL
     assert rec["email_count"] == 2
     assert rec["input_tokens"] == 123
     assert rec["output_tokens"] == 45
     # MagicMock cache fields aren't ints — they must degrade to 0, not crash
     assert rec["cache_read_tokens"] == 0
     assert rec["stop_reason"] == "end_turn"
+
+
+# ── analysis model selection ──────────────────────────────────────────────────
+
+def _stream_kwargs(configured=None):
+    """Run analyze_with_claude with ANALYSIS_MODEL set to `configured` and
+    return the kwargs passed to messages.stream."""
+    import commonFunctions
+    if configured is not None:
+        commonFunctions.set_credential("ANALYSIS_MODEL", configured)
+    response_json = json.dumps({"action_required": [], "filing_suggestions": []})
+    with patch("emailSummary.anthropic.Anthropic") as MockAnthropic:
+        mock_client = MagicMock()
+        MockAnthropic.return_value = mock_client
+        mock_client.messages.stream.return_value = _mock_anthropic_stream(response_json)
+        analyze_with_claude([_make_email("a@b.com")], [])
+    return mock_client.messages.stream.call_args.kwargs
+
+
+def test_default_analysis_model_is_haiku():
+    assert DEFAULT_ANALYSIS_MODEL == "claude-haiku-4-5"
+    assert analysis_model() == "claude-haiku-4-5"
+
+
+def test_analyze_with_claude_uses_default_model_without_thinking():
+    kwargs = _stream_kwargs()
+    assert kwargs["model"] == "claude-haiku-4-5"
+    # Haiku 4.5 doesn't take adaptive thinking — nothing thinking-related is sent
+    assert "thinking" not in kwargs
+    assert "output_config" not in kwargs
+
+
+def test_analyze_with_claude_uses_configured_sonnet_with_low_effort():
+    kwargs = _stream_kwargs("claude-sonnet-5")
+    assert kwargs["model"] == "claude-sonnet-5"
+    assert kwargs["thinking"] == {"type": "adaptive"}
+    assert kwargs["output_config"] == {"effort": "low"}
+
+
+def test_analyze_with_claude_opus_keeps_adaptive_thinking():
+    kwargs = _stream_kwargs("claude-opus-4-8")
+    assert kwargs["model"] == "claude-opus-4-8"
+    assert kwargs["thinking"] == {"type": "adaptive"}
+
+
+def test_unknown_configured_model_falls_back_to_default():
+    kwargs = _stream_kwargs("gpt-4o")
+    assert kwargs["model"] == DEFAULT_ANALYSIS_MODEL
+
+
+def test_token_usage_records_the_model_actually_used(_token_log):
+    _stream_kwargs("claude-sonnet-5")
+    assert json.loads(_token_log.read_text())["model"] == "claude-sonnet-5"
+
+
+def test_every_analysis_model_has_label_and_params():
+    for info in ANALYSIS_MODELS.values():
+        assert info["label"]
+        assert isinstance(info["params"], dict)
 
 
 def test_analyze_with_claude_defaults_caller_to_summary(_token_log):

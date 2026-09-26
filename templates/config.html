@@ -53,6 +53,16 @@
       <input id="ANTHROPIC_API_KEY" name="ANTHROPIC_API_KEY" type="password" value="{{ cfg.ANTHROPIC_API_KEY }}" placeholder="sk-ant-…">
     </div>
 
+    <div class="form-group">
+      <label for="ANALYSIS_MODEL">Analysis model</label>
+      <select id="ANALYSIS_MODEL" name="ANALYSIS_MODEL">
+        {% for model_id, info in analysis_models.items() %}
+        <option value="{{ model_id }}"{% if model_id == cfg.ANALYSIS_MODEL %} selected{% endif %}>{{ info.label }}{% if model_id == default_analysis_model %} (default){% endif %}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <p class="form-hint">Model used to flag action-required emails and suggest labels in summaries and inbox analysis. Token usage per run is shown on the dashboard.</p>
+
     <div class="form-section-label" style="margin-top:1.75rem">Resort</div>
 
     <div class="form-group form-group-sm">
@@ -88,6 +98,7 @@
     // Settings (unlike secrets) are sent even when blank, so clearing the box
     // actually resets it to the default.
     data.RESORT_MAX_MESSAGES = document.getElementById('RESORT_MAX_MESSAGES').value.trim();
+    data.ANALYSIS_MODEL = document.getElementById('ANALYSIS_MODEL').value;
 
     fetch('/api/config', {
       method: 'POST',

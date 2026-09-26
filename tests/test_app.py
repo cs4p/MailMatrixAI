@@ -817,6 +817,35 @@ def test_api_config_rejects_negative_resort_limit(client):
     assert resp.status_code == 400
 
 
+def test_api_config_saves_analysis_model(client):
+    resp = client.post("/api/config", data=json.dumps({"ANALYSIS_MODEL": "claude-sonnet-5"}),
+                       content_type="application/json")
+    assert resp.get_json()["ok"] is True
+    assert commonFunctions.get_credential("ANALYSIS_MODEL") == "claude-sonnet-5"
+
+
+def test_api_config_rejects_unknown_analysis_model(client):
+    resp = client.post("/api/config", data=json.dumps({"ANALYSIS_MODEL": "gpt-4o"}),
+                       content_type="application/json")
+    assert resp.status_code == 400
+    assert resp.get_json()["ok"] is False
+    assert not commonFunctions.get_credential("ANALYSIS_MODEL")
+
+
+def test_config_page_shows_analysis_model_select(client):
+    resp = client.get("/config")
+    html = resp.data.decode()
+    assert 'id="ANALYSIS_MODEL"' in html
+    assert '<option value="claude-haiku-4-5" selected>' in html
+    assert "claude-opus-4-8" in html
+
+
+def test_config_page_selects_configured_analysis_model(client):
+    commonFunctions.set_credential("ANALYSIS_MODEL", "claude-opus-4-8")
+    html = client.get("/config").data.decode()
+    assert '<option value="claude-opus-4-8" selected>' in html
+
+
 def test_config_page_shows_resort_limit_field(client):
     resp = client.get("/config")
     assert b"RESORT_MAX_MESSAGES" in resp.data
