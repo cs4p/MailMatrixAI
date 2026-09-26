@@ -26,6 +26,7 @@ from commonFunctions import (
     get_credential,
     imap_call,
     imap_date,
+    log_token_usage,
     parse_headers,
     rules_lock,
     setup_logging,
@@ -35,6 +36,8 @@ from commonFunctions import (
 
 log = logging.getLogger(__name__)
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+ANALYSIS_MODEL = "claude-opus-4-8"
 
 # ── CSS & JS as plain strings (no brace-doubling needed) ─────────────────────
 
@@ -291,7 +294,8 @@ def deduplicate_inbox_emails(emails: List[dict]) -> List[dict]:
 
 # ── Claude analysis ───────────────────────────────────────────────────────────
 
-def analyze_with_claude(inbox_emails: List[dict], available_labels: List[str]) -> dict:
+def analyze_with_claude(inbox_emails: List[dict], available_labels: List[str],
+                        caller: str = "summary") -> dict:
     if not inbox_emails:
         return {'action_required': [], 'filing_suggestions': []}
 
@@ -353,7 +357,7 @@ Rules:
 
     try:
         with client.messages.stream(
-            model="claude-opus-4-8",
+            model=ANALYSIS_MODEL,
             max_tokens=64000,
             thinking={"type": "adaptive"},
             messages=[{"role": "user", "content": prompt}],
@@ -386,6 +390,8 @@ Rules:
 
     log.info("Claude response received (stop_reason=%s, input_tokens=%d, output_tokens=%d)",
               response.stop_reason, response.usage.input_tokens, response.usage.output_tokens)
+    log_token_usage(response, caller=caller, model=ANALYSIS_MODEL,
+                    email_count=len(inbox_emails))
 
     text = next((b.text for b in response.content if b.type == "text"), "")
 

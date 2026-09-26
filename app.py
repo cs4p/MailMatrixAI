@@ -47,11 +47,13 @@ from commonFunctions import (
     move_imap_messages,
     move_message_uid,
     parse_headers,
+    read_token_usage,
     resolve_duplicate_address,
     save_rules_file,
     send_smtp,
     set_credential,
     setup_logging,
+    summarize_token_usage,
     summary_files,
     uid_search_all,
     update_sender_rule,
@@ -293,6 +295,15 @@ def config():
 def api_inbox_stats():
     count = _inbox_count()
     return jsonify({"inbox_count": count, "connected": count >= 0})
+
+
+@app.route("/api/token-usage")
+def api_token_usage():
+    records = read_token_usage()
+    return jsonify({
+        "last_7_days": summarize_token_usage(records, 7),
+        "last_30_days": summarize_token_usage(records, 30),
+    })
 
 
 def _child_env() -> dict:
@@ -702,7 +713,7 @@ def _analyze_inbox(progress_cb=None, cancel_event=None) -> dict:
             break
         batch = emails[batch_start:batch_start + CLAUDE_BATCH_SIZE]
         progress_cb("analyzing", batch_start, total_senders)
-        analysis = analyze_with_claude(batch, labels)
+        analysis = analyze_with_claude(batch, labels, caller="inbox-analyze")
         if analysis.get("_error") and not error:
             error = analysis["_error"]
         # analyze_with_claude numbers emails 1..len(batch) local to this call;

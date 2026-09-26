@@ -28,6 +28,11 @@
     <div class="stat-label">Reports</div>
     <div class="stat-note">Saved summaries</div>
   </div>
+  <div class="stat-card" id="stat-tokens">
+    <div class="stat-num" id="token-count">—</div>
+    <div class="stat-label">AI tokens (7 days)</div>
+    <div class="stat-note" id="token-note">Loading…</div>
+  </div>
 </div>
 
 <div class="action-row">
@@ -117,6 +122,26 @@
     .catch(() => {
       document.getElementById('inbox-count').textContent = '?';
       document.getElementById('inbox-note').textContent = 'Could not connect';
+    });
+
+  function fmtTokens(n) {
+    if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+    if (n >= 1e3) return (n / 1e3).toFixed(1) + 'k';
+    return String(n);
+  }
+
+  fetch('/api/token-usage')
+    .then(r => r.json())
+    .then(data => {
+      const week = data.last_7_days, month = data.last_30_days;
+      document.getElementById('token-count').textContent = fmtTokens(week.total_tokens);
+      document.getElementById('token-note').textContent = week.runs
+        ? `${week.runs} run${week.runs === 1 ? '' : 's'} · ${fmtTokens(week.tokens_per_email)}/email · ${fmtTokens(month.total_tokens)} in 30d`
+        : (month.runs ? `${fmtTokens(month.total_tokens)} in 30 days` : 'No AI runs yet');
+    })
+    .catch(() => {
+      document.getElementById('token-count').textContent = '?';
+      document.getElementById('token-note').textContent = 'Usage unavailable';
     });
 
   function addActivity(msg, cls) {

@@ -1180,7 +1180,7 @@ def test_api_inbox_analyze_batches_claude_calls_and_remaps_indices(client, monke
     imap = _inbox_imap(msg_ids=msg_id_list)
     imap.fetch.side_effect = _combined_fetch(_per_sender_headers)
 
-    def _fake_analyze(batch, labels):
+    def _fake_analyze(batch, labels, caller=None):
         return {
             "action_required": [],
             "filing_suggestions": [
@@ -1199,6 +1199,7 @@ def test_api_inbox_analyze_batches_claude_calls_and_remaps_indices(client, monke
 
     assert data["status"] == "done"
     assert mock_analyze.call_count == 3  # 50 + 50 + 20
+    assert all(c.kwargs.get("caller") == "inbox-analyze" for c in mock_analyze.call_args_list)
     suggestions = data["result"]["filing_suggestions"]
     global_indices = sorted(s["index"] for s in suggestions)
     assert global_indices == list(range(1, n_senders + 1))
@@ -1255,7 +1256,7 @@ def test_api_inbox_analyze_cancel_between_batches(client, monkeypatch):
     imap = _inbox_imap(msg_ids=msg_id_list)
     imap.fetch.side_effect = _combined_fetch(_per_sender_headers)
 
-    def _cancel_after_first_batch(batch, labels):
+    def _cancel_after_first_batch(batch, labels, caller=None):
         flask_app_module._inbox_jobs[job_id]["cancel_event"].set()
         return {"action_required": [], "filing_suggestions": []}
 
@@ -1873,3 +1874,36 @@ def test_rules_import_requires_csrf_header(client):
         headers={"X-Requested-With": ""},
     )
     assert resp.status_code == 403
+
+
+# ── /api/token-usage ──────────────────────────────────────────────────────────
+
+def test_api_token_usage_returns_zeros_without_log(client):
+    data = client.get("/api/token-usage").get_json()
+    for window in ("last_7_days", "last_30_days"):
+        assert data[window]["runs"] == 0
+        assert data[window]["total_tokens"] == 0
+        assert data[window]["tokens_per_email"] == 0
+
+
+def test_api_token_usage_aggregates_by_window(client, _token_log):
+    from datetime import datetime, timedelta
+    now = datetime.now()
+    rows = [
+        {"ts": (now - timedelta(days=1)).isoformat(timespec="seconds"),
+         "email_count": 10, "input_tokens": 1000, "output_tokens": 200},
+        {"ts": (now - timedelta(days=20)).isoformat(timespec="seconds"),
+         "email_count": 5, "input_tokens": 500, "output_tokens": 100},
+        {"ts": (now - timedelta(days=60)).isoformat(timespec="seconds"),
+         "email_count": 99, "input_tokens": 99999, "output_tokens": 9999},
+    ]
+    _token_log.write_text("".join(json.dumps(r) + "\n" for r in rows))
+
+    data = client.get("/api/token-usage").get_json()
+
+    assert data["last_7_days"]["runs"] == 1
+    assert data["last_7_days"]["total_tokens"] == 1200
+    assert data["last_7_days"]["tokens_per_email"] == 120
+    assert data["last_30_days"]["runs"] == 2
+    assert data["last_30_days"]["total_tokens"] == 1800
+    assert data["last_30_days"]["emails"] == 15

@@ -21,43 +21,8 @@ Always add tests when adding new code. Run the suite with:
 python -m pytest
 ```
 
-Tests live in `tests/`. Key patterns:
-- **IMAP mocks**: every IMAP method must return a 2-tuple `("OK", data)` — the `imap_call` wrapper unpacks this. Use `MagicMock()` with explicit `return_value` assignments per method.
-- **Batched FETCH mocks**: `imap.fetch` receives a *comma-joined ID set* (e.g. `b"1,2,3"`), not one call per message (`commonFunctions.fetch_many`). A side effect must emit a multi-message response: per message, a header tuple whose prefix starts with the sequence number (`b"1 (BODY[HEADER...] {n}"`), optionally a text continuation tuple (no sequence number; the server echoes `<0.2000>` back as `<0>`), then a bare `b")"`. See `_combined_fetch` in `test_app.py`.
-- **Flask tests**: use `client` fixture from `test_app.py` which patches `RULES_PATH`, `SUMMARY_DIR`, and `ENV_PATH` to tmp paths so tests never touch real files (it also resets the module-level inbox-count cache).
-- **Keychain**: an autouse fixture in `conftest.py` fakes `keyring` and invalidates the credential-blob cache around every test — never rely on real Keychain state.
-- **Anthropic mock**: `client.messages.stream(...)` is a context manager — mock via `mock_cm.__enter__.return_value = mock_stream`.
+Tests live in `tests/`; mocking patterns for IMAP, batched FETCH, Flask, Keychain and Anthropic are in `tests/CLAUDE.md`.
 - New Flask routes → tests in `tests/test_app.py`. New script functions → tests in the matching `tests/test_<script>.py`.
-
-## Development Setup
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -e .
-```
-
-Dependencies are declared in `pyproject.toml` (`python-dotenv`, `anthropic`, `flask`, `keyring`). Python 3.10+ required.
-
-## Running the Scripts
-
-```bash
-# Desktop app (Electron wrapper around the web UI)
-cd electron && npm install && npm start
-
-# Web UI
-python app.py                         # start Flask dev server at http://localhost:5000
-
-# CLI scripts
-python emailRulesInit.py              # rebuild emailRules.json from mailbox history
-python sortEmail.py                   # file today's INBOX messages
-python resortEmail.py                 # dry-run reconcile of all filed mail (--apply to write)
-python emailSummary.py                # summary for today
-python emailSummary.py 2026-06-27     # summary for a specific date
-python emailSummary.py --no-serve     # generate report without launching browser server
-```
-
-`app.py` reads `MAILMATRIX_HOST` (default `127.0.0.1`), `MAILMATRIX_PORT` (default `5000`), and `MAILMATRIX_DEBUG` (default off) from the environment. The Electron wrapper (`electron/main.js`) spawns `.venv/bin/python app.py` on a free port using these.
 
 ## Configuration
 
@@ -100,59 +65,19 @@ build that is only reachable as `latest` or `sha-…`. Automated update tools
 
 ### `app.py` — Flask web UI
 
-Four pages served at `/`, `/summaries`, `/rules`, `/config`. API endpoints under `/api/`:
-
-| Route | Purpose |
-|---|---|
-| `GET /` | Dashboard: stat cards (live inbox count via IMAP), action buttons |
-| `GET /summaries` | List `.html` files from `emailSummary/` |
-| `GET /summaries/<filename>` | Serve a saved summary HTML file |
-| `GET /rules` | Faceted search over `emailRules.json` |
-| `GET /config` | Credentials form (reads from Keychain via `get_credential`) |
-| `GET /api/inbox-stats` | Returns `{inbox_count, connected}` (count cached 30s; invalidated by sort/accept) |
-| `POST /api/sort` | Runs `sortEmail.py` as subprocess |
-| `POST /api/resort` | In-process `resortEmail.resort()`; `?dryrun=1` reports, otherwise applies (guarded by `_resort_lock`) |
-| `POST /api/generate-summary` | Runs `emailSummary.py --no-serve` as subprocess |
-| `POST /accept` | Calls `accept_filing()` from `emailSummary.py` |
-| `POST /api/config` | Writes fields to the Keychain via `set_credential` |
-| `GET /api/test-connection` | Attempts IMAP connect/logout, returns `{ok, message/error}` |
-| `GET /mail` | Mail client page (three-pane: folders / message list / reading pane) |
-| `GET /api/mail/folders` | Full folder tree via `list_folders()` (cached 60s; invalidated on folder create) |
-| `GET /api/mail/unread` | `{name: unseen_count}` via one STATUS (UNSEEN) per selectable folder (uncached) |
-| `GET /api/mail/messages?folder=&page=&page_size=` | UID-paginated message list, newest first (`FLAGS BODY.PEEK[HEADER…]`) |
-| `GET /api/mail/message?folder=&uid=` | Full message via `BODY.PEEK[]` + `extract_message_parts`; marks `\Seen` |
-| `GET /api/mail/attachment?folder=&uid=&part=` | Downloads one attachment (always `application/octet-stream`) |
-| `POST /api/mail/move` | `move_message_uid`; a `MailMatrixCategories/*` target also creates a sender rule |
-| `POST /api/mail/send` | Builds an `EmailMessage`, sends via `send_smtp`, APPENDs a copy to the Sent folder |
-| `POST /api/mail/folders/create` | `imap.create()` a new folder (name must pass `validate_new_folder_name`) |
-
 **Mail-client conventions:** the `/api/mail/*` surface is **UID-based** (`imap.uid('SEARCH'|'FETCH'|'COPY'|'STORE'|'EXPUNGE', …)`) so message references survive expunges — do not mix in sequence-number operations there. Folder params are gated by `validate_folder` (relaxed `validate_label` that still rejects quotes/CRLF/traversal but allows any folder, not just `MailMatrixCategories/*`); `uid`/`part` must match `^\d+$`. The client passes back the **raw wire folder name** verbatim (`list_folders` returns `name` = raw, `display` = `decode_modified_utf7(name)`); there is no encode path, so folder *creation* is ASCII-only. HTML bodies render in a `<iframe sandbox>` with a CSP that blocks images until the user opts in — never render server-fetched HTML same-origin. Since this is Fastmail (not Gmail), SMTP-sent mail is **not** auto-saved: `_append_to_sent()` does an IMAP APPEND to the `\Sent` folder (best-effort; a failed APPEND is a warning, never a send failure).
 
 POST bodies are read through `_json_body()` (never `request.get_json` directly) so malformed/non-object bodies degrade to `{}` and the handlers' own validation runs instead of a 500. Inbox-analysis jobs (`/api/inbox-analyze/*`) run in daemon threads tracked in `_inbox_jobs`; always look jobs up via `_get_job()` (takes the lock).
 
-Templates in `templates/` extend `templates/base.html`. Static files in `static/` (`style.css`, `app.js`). Apple-inspired design: `#f5f5f7` bg, white cards, `border-radius: 16px`, system font stack, accent colors green/red/orange/blue.
-
 ### `commonFunctions.py` — shared utilities
 
-All scripts import from here:
-- `imap_call(fn)` — wraps any IMAP operation with exponential-backoff retry on rate-limit errors (`_RATE_LIMIT_PHRASES`)
-- `fetch_many(imap, msg_ids, parts, use_uid=False)` — batched FETCH over comma-joined ID sets (chunked by `FETCH_CHUNK_SIZE`); returns `{msg_id: {"header": bytes|None, "text": bytes|None}}`. All multi-message fetch paths go through this — never fetch in a per-message loop. With `use_uid=True` it runs `UID FETCH`, keys by UID, and adds a `"flags"` key
-- `connect_to_imap()` — `IMAP4_SSL` + login
-- `extract_email_address()` — pulls bare address from `"Name <addr>"` strings
-- `get_all_labels(imap, parent_label=None)` — lists folders, optionally filtered to children of `parent_label`
-- `decode_header_value()` / `parse_headers()` — RFC2047-safe header decoding and From/Subject/Date extraction
-- `imap_date(d)` — formats a `date` as `D-Mon-YYYY` for IMAP SEARCH `ON`
-- `setup_logging(log_file)` — configures `logging.basicConfig` with stdout + file handler; call at the top of each `main()`
-
-Mail-client helpers (used by `/api/mail/*`): `validate_folder` / `validate_new_folder_name`, `decode_modified_utf7`, `list_folders` (flags + special-use + selectability), `uid_search_all`, `extract_message_parts` (headers/text/html/attachments), `get_attachment`, `move_message_uid` (COPY→`\Deleted`→UID EXPUNGE, only-delete-after-copy-OK), `add_sender_to_label_rule` (also reused by `emailSummary.accept_filing`), `send_smtp` (465→SSL, else STARTTLS). Credential keys include `SMTP_SERVER`/`SMTP_PORT` (default `smtp.fastmail.com:465`).
+All scripts import from here. All multi-message fetch paths go through `fetch_many` — never fetch in a per-message loop. Call `setup_logging` at the top of each `main()`.
 
 ### Label conventions
 
 The sorting pipeline only touches labels under `MailMatrixCategories/` (e.g. `MailMatrixCategories/Work`); the Mail client browses the whole folder tree. `/` is the IMAP hierarchy delimiter (from each folder's LIST response). Folder names must be quoted in IMAP commands: `imap.select('"MailMatrixCategories/Work"')`.
 
 ### `emailRulesInit.py` pipeline
-
-`get_all_labels(imap, parent_label="MailMatrixCategories")` → `crawl_emails_in_label()` (fetches full RFC822, extracts `From:`) → `build_email_rules()` → `write_to_json()` → `emailRules.json`
 
 `emailDomains` in the schema is always written as `[]` — domain inference is not implemented.
 
@@ -186,28 +111,6 @@ Non-negotiable safety rules (tests in `tests/test_resort.py` pin each one):
 
 ### `emailSummary.py` pipeline
 
-1. Fetch `MailMatrixCategories/*` folders for the target date (`IMAP SEARCH ON DD-Mon-YYYY`) — headers only
-2. Fetch INBOX for the target date with `BODY[TEXT]<0.2000>` body snippets
-3. Deduplicate INBOX emails by sender (`deduplicate_inbox_emails`) — one card per unique `from_addr`
-4. Call `claude-opus-4-8` (streaming, adaptive thinking) with a JSON-structured prompt asking for action classification and filing suggestions
-5. Write `emailSummary/email_summary_YYYY-MM-DD.html` — an HTML report with three sections
-6. Start a local HTTP server (`socketserver.ThreadingMixIn + TCPServer`) on a random port and open the browser
-
 The HTML report has **Accept** buttons on unmatched email cards. Clicking one POSTs `{from_addr, label}` to `/accept` on the local server, which reconnects to IMAP, moves all INBOX messages from that sender to the label, and patches `emailRules.json`. The server runs until Ctrl+C.
 
 Claude response is parsed as JSON (`action_required`, `filing_suggestions` arrays indexed by email position). Falls back gracefully if Claude doesn't return valid JSON.
-
-### `emailRules.json` schema
-
-Defined in `emailRules.schema.json` (JSON Schema draft-07):
-```json
-{
-  "labels": [
-    {
-      "labelName": "MailMatrixCategories/Work",
-      "emailAddresses": ["alice@example.com"],
-      "emailDomains": []
-    }
-  ]
-}
-```

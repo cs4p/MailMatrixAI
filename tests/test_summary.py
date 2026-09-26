@@ -9,6 +9,7 @@ import httpx
 import pytest
 
 from emailSummary import (
+    ANALYSIS_MODEL,
     ReportGenerationError,
     accept_filing,
     analyze_with_claude,
@@ -339,6 +340,52 @@ def test_analyze_with_claude_logs_success_with_token_usage(caplog):
         "Claude response received" in r.message and "input_tokens=123" in r.message and "output_tokens=45" in r.message
         for r in caplog.records
     )
+
+
+def test_analyze_with_claude_writes_token_usage_record(_token_log):
+    response_json = json.dumps({"action_required": [], "filing_suggestions": []})
+
+    with patch("emailSummary.anthropic.Anthropic") as MockAnthropic:
+        mock_client = MagicMock()
+        MockAnthropic.return_value = mock_client
+        mock_client.messages.stream.return_value = _mock_anthropic_stream(response_json)
+        analyze_with_claude([_make_email("a@b.com"), _make_email("c@d.com")], [],
+                            caller="inbox-analyze")
+
+    lines = _token_log.read_text().splitlines()
+    assert len(lines) == 1
+    rec = json.loads(lines[0])
+    assert rec["caller"] == "inbox-analyze"
+    assert rec["model"] == ANALYSIS_MODEL
+    assert rec["email_count"] == 2
+    assert rec["input_tokens"] == 123
+    assert rec["output_tokens"] == 45
+    # MagicMock cache fields aren't ints — they must degrade to 0, not crash
+    assert rec["cache_read_tokens"] == 0
+    assert rec["stop_reason"] == "end_turn"
+
+
+def test_analyze_with_claude_defaults_caller_to_summary(_token_log):
+    response_json = json.dumps({"action_required": [], "filing_suggestions": []})
+
+    with patch("emailSummary.anthropic.Anthropic") as MockAnthropic:
+        mock_client = MagicMock()
+        MockAnthropic.return_value = mock_client
+        mock_client.messages.stream.return_value = _mock_anthropic_stream(response_json)
+        analyze_with_claude([_make_email("a@b.com")], [])
+
+    assert json.loads(_token_log.read_text())["caller"] == "summary"
+
+
+def test_analyze_with_claude_no_usage_record_on_api_error(_token_log):
+    with patch("emailSummary.anthropic.Anthropic") as MockAnthropic:
+        mock_client = MagicMock()
+        MockAnthropic.return_value = mock_client
+        mock_client.messages.stream.side_effect = anthropic.APIConnectionError(
+            request=_anthropic_request())
+        analyze_with_claude([_make_email("a@b.com")], [])
+
+    assert not _token_log.exists()
 
 
 def test_analyze_with_claude_handles_rate_limit(caplog):

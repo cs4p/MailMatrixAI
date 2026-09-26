@@ -6,6 +6,7 @@ __pycache__/
 emailRules.json
 emailSummary/
 *.log
+logs/
 .pytest_cache/
 electron/node_modules/
 electron/dist/

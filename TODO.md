@@ -201,6 +201,90 @@ flag/star, mark-unread, folder rename/delete, server-side conversation threading
 
 ---
 
+## Reduce AI token usage
+
+Goal: spend fewer tokens per summary / inbox analysis without losing quality.
+The only model call today is `analyze_with_claude()` (`emailSummary.py:294`),
+hardcoded to `claude-opus-4-8` with `max_tokens=64000` and adaptive thinking;
+usage is only written to the log line at `emailSummary.py:387`. The three items
+below are independent, but do spam filtering and the usage log first — the log
+is how we measure whether the other two actually saved anything.
+
+### 1. Spam pre-filter (before AI analysis)
+
+Flag spam deterministically and drop it from the prompt, so Claude never sees it.
+
+- **Indicator sources, cheapest first:**
+  - **Server verdicts already in the headers** — Fastmail stamps
+    `X-Spam-Score` / `X-Spam-Status` / `X-Spam-Flag` (SpamAssassin-based) and
+    `Authentication-Results` (SPF / DKIM / DMARC). Free, no network. Add these
+    fields to the `BODY.PEEK[HEADER.FIELDS (...)]` list the summary already
+    fetches through `fetch_many`.
+  - **The user's own Junk folder** — senders/domains of messages in the
+    `\Junk` special-use folder (`list_folders` already maps it, see
+    `commonFunctions.py:976`) become a local blocklist, like `emailRules.json`
+    in reverse.
+  - **Public reputation lists** — e.g. Spamhaus DBL (domains) / ZEN (IPs) via
+    DNS lookups on the sender domain and the first external `Received:` hop, or
+    a downloaded list refreshed daily and cached on disk. Check each list's
+    terms of use first (Spamhaus's free tier excludes commercial use and
+    queries through public resolvers). Make this optional and off by default;
+    it must never block the pipeline on a DNS timeout.
+- **New module `spamFilter.py`:** `score_message(headers) -> (score, reasons)`
+  combining the signals above with configurable weights, and
+  `is_spam(score) -> bool` against a `SPAM_THRESHOLD` setting (Keychain blob,
+  like `RESORT_MAX_MESSAGES`).
+- **Wire-in:** in `emailSummary`, filter after `deduplicate_inbox_emails` and
+  before `analyze_with_claude`; show the filtered messages in a collapsed
+  "Likely spam (N)" section of the report with their reasons, plus a
+  "Not spam" button that adds the sender to an allowlist. Never move or delete
+  anything automatically in v1 — flag only.
+- **Tests** (`tests/test_spamFilter.py`): each signal on its own; threshold
+  boundaries; an allowlisted sender is never flagged; a DNS failure scores as
+  neutral, not spam; spam is excluded from the Claude prompt (assert on the
+  mocked `messages.stream` call).
+
+### 2. Token-usage log — ✅ shipped (2026-09-25)
+
+Implemented: `log_token_usage` / `read_token_usage` / `summarize_token_usage`
+in `commonFunctions.py`, called from `analyze_with_claude`; `GET
+/api/token-usage`; the "AI tokens (7 days)" dashboard card. Not yet done: the
+spam-filtered count (needs item 1) and cost estimates (tokens only for now).
+
+- After each call, append one JSON line to `logs/token_usage.jsonl`:
+  timestamp, caller (`summary` / `inbox-analyze`), model, email count,
+  `input_tokens`, `output_tokens`, cache read/write tokens, `stop_reason`, and
+  spam-filtered count. Put the helper in `commonFunctions.py`
+  (`log_token_usage(response, **context)`) so future call sites reuse it.
+  Best-effort: a write failure is a warning, never a failed analysis.
+- Estimated cost: a small per-model price table in one place, marked as needing
+  manual updates — or leave cost out and log tokens only.
+- **UI:** a "Token usage" card on the dashboard (last 7 / 30 days, tokens per
+  run, tokens per email) backed by `GET /api/token-usage`.
+- **Tests:** the helper writes the expected line from a mocked `response.usage`;
+  the endpoint aggregates a fixture file; a missing file returns zeros.
+
+### 3. Default to lower-cost models for email analysis
+
+- Make the model a setting: `ANALYSIS_MODEL` in the Keychain blob with a
+  `/config` dropdown, defaulting to a cheaper model (Haiku 4.5 —
+  `claude-haiku-4-5-20251001` — or Sonnet 5 — `claude-sonnet-5`) instead of
+  Opus. Check current pricing and model IDs when implementing.
+- Classification and filing suggestions are simple, structured tasks: drop
+  adaptive thinking by default (or make it a toggle) and cut `max_tokens` from
+  64000 to something sized to the JSON output, e.g. ~200 tokens per email plus
+  headroom.
+- Optional escalation: run the cheap model first and re-run only low-confidence
+  or invalid-JSON results on the stronger model.
+- Also shrink the prompt: body snippets are `BODY[TEXT]<0.2000>`, so try a
+  smaller byte range and strip quoted replies / signatures; put the fixed
+  instructions + label list first so prompt caching can apply across runs.
+- Compare before/after with the token-usage log (item 2).
+- **Tests:** the configured model reaches `messages.stream`; an unset setting
+  falls back to the default; the thinking toggle is respected.
+
+---
+
 ## resort function — ✅ shipped (2026-08-25)
 
 Implemented as `resortEmail.py` + `POST /api/resort` + the **Resort Now…**
@@ -236,3 +320,4 @@ two copies of the same message *within* one folder.
 - add a view that shows all email from the past 24 hours sorted by category using the custom order
 - add a view that shows all email from the past 7 days sorted by category using the custom order
 - add a view that shows all email from the past 30 days sorted by category using the custom order
+- Add a search function to filter emails by various criteria
