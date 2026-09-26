@@ -116,7 +116,9 @@ environment instead (`IMAP_*`, `SMTP_*`, `ANTHROPIC_API_KEY`), and persistent
 state lives in `MAILMATRIX_DATA_DIR` (`/data`).
 
 Images are tagged with semantic versions (`0.3.0`, `0.3`) from `vX.Y.Z` git
-tags, so deployments pin an immutable version and Renovate can bump it:
+tags, which CI cuts automatically on every merge to `main` (see
+[`k8s/README.md`](k8s/README.md#cutting-a-release)), so deployments pin an
+immutable version and Renovate can bump it:
 
 ```bash
 docker run --rm -p 5000:5000 --env-file .env ghcr.io/cs4p/mailmatrixai:0.4.0
