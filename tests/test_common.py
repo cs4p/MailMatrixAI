@@ -1434,3 +1434,99 @@ def test_validate_rules_document_rejects_bad_label_entry():
 def test_validate_rules_document_rejects_bad_address_list():
     err = validate_rules_document({"labels": [{"labelName": "Work", "emailAddresses": "x@y.com"}]})
     assert err is not None
+
+
+# ── token-usage log ───────────────────────────────────────────────────────────
+
+def _usage_response(**usage):
+    resp = MagicMock()
+    resp.stop_reason = "end_turn"
+    resp.usage.input_tokens = usage.get("input_tokens", 100)
+    resp.usage.output_tokens = usage.get("output_tokens", 20)
+    resp.usage.cache_read_input_tokens = usage.get("cache_read")
+    resp.usage.cache_creation_input_tokens = usage.get("cache_write")
+    return resp
+
+
+def test_token_usage_path_honours_override(_token_log):
+    assert commonFunctions.token_usage_path() == _token_log
+
+
+def test_token_usage_path_defaults_under_data_dir(monkeypatch, tmp_path):
+    monkeypatch.delenv("MAILMATRIX_TOKEN_LOG", raising=False)
+    monkeypatch.setenv("MAILMATRIX_DATA_DIR", str(tmp_path))
+    assert commonFunctions.token_usage_path() == tmp_path / "logs" / "token_usage.jsonl"
+
+
+def test_log_token_usage_appends_json_line(tmp_path):
+    path = tmp_path / "nested" / "usage.jsonl"
+    commonFunctions.log_token_usage(_usage_response(cache_read=7, cache_write=3),
+                                    caller="summary", model="m", email_count=4, path=path)
+    commonFunctions.log_token_usage(_usage_response(), caller="inbox-analyze",
+                                    model="m", email_count=1, path=path)
+
+    lines = [json.loads(l) for l in path.read_text().splitlines()]
+    assert len(lines) == 2
+    first = lines[0]
+    assert first["caller"] == "summary"
+    assert first["email_count"] == 4
+    assert (first["input_tokens"], first["output_tokens"]) == (100, 20)
+    assert (first["cache_read_tokens"], first["cache_write_tokens"]) == (7, 3)
+    assert first["stop_reason"] == "end_turn"
+    assert "ts" in first
+    # None cache fields (no caching involved) record as 0
+    assert lines[1]["cache_read_tokens"] == 0
+    assert lines[1]["cache_write_tokens"] == 0
+
+
+def test_log_token_usage_write_failure_is_warning_not_error(tmp_path, caplog):
+    blocker = tmp_path / "file"
+    blocker.write_text("x")
+    path = blocker / "usage.jsonl"  # parent is a file → mkdir fails
+
+    with caplog.at_level("WARNING"):
+        result = commonFunctions.log_token_usage(_usage_response(), caller="summary",
+                                                 model="m", email_count=1, path=path)
+
+    assert result is None
+    assert any("token usage log" in r.message for r in caplog.records)
+
+
+def test_read_token_usage_missing_file_returns_empty(tmp_path):
+    assert commonFunctions.read_token_usage(tmp_path / "nope.jsonl") == []
+
+
+def test_read_token_usage_skips_corrupt_lines(tmp_path):
+    path = tmp_path / "usage.jsonl"
+    path.write_text('{"ts": "2026-09-01T00:00:00"}\nnot json\n[1, 2]\n{"ts": "x"}\n')
+    assert len(commonFunctions.read_token_usage(path)) == 2
+
+
+def test_summarize_token_usage_windows_and_averages():
+    from datetime import datetime
+    now = datetime(2026, 9, 25, 12, 0, 0)
+    records = [
+        {"ts": "2026-09-24T12:00:00", "email_count": 4, "input_tokens": 300,
+         "output_tokens": 100, "cache_read_tokens": 50},
+        {"ts": "2026-09-20T12:00:00", "email_count": 0, "input_tokens": 100,
+         "output_tokens": 0},
+        {"ts": "2026-08-01T12:00:00", "email_count": 9, "input_tokens": 9999,
+         "output_tokens": 9999},
+        {"ts": "garbage", "input_tokens": 5},
+        {"input_tokens": 5},
+    ]
+    week = commonFunctions.summarize_token_usage(records, 7, now=now)
+
+    assert week["runs"] == 2
+    assert week["emails"] == 4
+    assert week["total_tokens"] == 500
+    assert week["cache_read_tokens"] == 50
+    assert week["tokens_per_run"] == 250
+    assert week["tokens_per_email"] == 125
+
+
+def test_summarize_token_usage_empty():
+    totals = commonFunctions.summarize_token_usage([], 7)
+    assert totals["runs"] == 0
+    assert totals["tokens_per_run"] == 0
+    assert totals["tokens_per_email"] == 0

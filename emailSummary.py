@@ -26,6 +26,7 @@ from commonFunctions import (
     get_credential,
     imap_call,
     imap_date,
+    log_token_usage,
     parse_headers,
     rules_lock,
     setup_logging,
@@ -35,6 +36,34 @@ from commonFunctions import (
 
 log = logging.getLogger(__name__)
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Models selectable for inbox analysis (ANALYSIS_MODEL setting on /config).
+# Classification + filing suggestions is a simple structured task, so the
+# default is the cheapest model; per-model request params keep each one on a
+# config it accepts (Haiku 4.5 has no adaptive thinking; Sonnet 5 runs adaptive
+# unless told otherwise, so it gets low effort; Opus 4.8 keeps the original
+# adaptive-thinking setup for anyone who wants the old quality/cost).
+DEFAULT_ANALYSIS_MODEL = "claude-haiku-4-5"
+ANALYSIS_MODELS = {
+    "claude-haiku-4-5": {
+        "label": "Claude Haiku 4.5 — lowest cost",
+        "params": {},
+    },
+    "claude-sonnet-5": {
+        "label": "Claude Sonnet 5 — balanced",
+        "params": {"thinking": {"type": "adaptive"}, "output_config": {"effort": "low"}},
+    },
+    "claude-opus-4-8": {
+        "label": "Claude Opus 4.8 — highest quality, highest cost",
+        "params": {"thinking": {"type": "adaptive"}},
+    },
+}
+
+
+def analysis_model() -> str:
+    """The configured analysis model, or the default when unset/unknown."""
+    model = (get_credential("ANALYSIS_MODEL") or "").strip()
+    return model if model in ANALYSIS_MODELS else DEFAULT_ANALYSIS_MODEL
 
 # ── CSS & JS as plain strings (no brace-doubling needed) ─────────────────────
 
@@ -291,7 +320,8 @@ def deduplicate_inbox_emails(emails: List[dict]) -> List[dict]:
 
 # ── Claude analysis ───────────────────────────────────────────────────────────
 
-def analyze_with_claude(inbox_emails: List[dict], available_labels: List[str]) -> dict:
+def analyze_with_claude(inbox_emails: List[dict], available_labels: List[str],
+                        caller: str = "summary") -> dict:
     if not inbox_emails:
         return {'action_required': [], 'filing_suggestions': []}
 
@@ -349,14 +379,15 @@ Rules:
 - Prefer existing labels; set is_new_label to false and use the exact label name from the list
 - If no existing label fits well, suggest a descriptive new name under MailMatrixCategories/ and set is_new_label to true"""
 
-    log.info("Calling Claude to analyze %d inbox emails...", len(inbox_emails))
+    model = analysis_model()
+    log.info("Calling %s to analyze %d inbox emails...", model, len(inbox_emails))
 
     try:
         with client.messages.stream(
-            model="claude-opus-4-8",
+            model=model,
             max_tokens=64000,
-            thinking={"type": "adaptive"},
             messages=[{"role": "user", "content": prompt}],
+            **ANALYSIS_MODELS[model]["params"],
         ) as stream:
             response = stream.get_final_message()
     except anthropic.AuthenticationError:
@@ -386,6 +417,8 @@ Rules:
 
     log.info("Claude response received (stop_reason=%s, input_tokens=%d, output_tokens=%d)",
               response.stop_reason, response.usage.input_tokens, response.usage.output_tokens)
+    log_token_usage(response, caller=caller, model=model,
+                    email_count=len(inbox_emails))
 
     text = next((b.text for b in response.content if b.type == "text"), "")
 

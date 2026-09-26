@@ -17,7 +17,14 @@ from dotenv import load_dotenv, dotenv_values
 from flask import Flask, g, jsonify, redirect, render_template, request, send_file, url_for
 
 import commonFunctions
-from emailSummary import accept_filing, analyze_with_claude, deduplicate_inbox_emails
+from emailSummary import (
+    ANALYSIS_MODELS,
+    DEFAULT_ANALYSIS_MODEL,
+    accept_filing,
+    analysis_model,
+    analyze_with_claude,
+    deduplicate_inbox_emails,
+)
 import resortEmail
 from resortEmail import resort, resort_max_messages
 from sortEmail import load_rules as load_sort_rules
@@ -47,11 +54,13 @@ from commonFunctions import (
     move_imap_messages,
     move_message_uid,
     parse_headers,
+    read_token_usage,
     resolve_duplicate_address,
     save_rules_file,
     send_smtp,
     set_credential,
     setup_logging,
+    summarize_token_usage,
     summary_files,
     uid_search_all,
     update_sender_rule,
@@ -111,12 +120,12 @@ _sort_lock = threading.Lock()
 # One resort at a time: two concurrent reconciles would race on the same
 # COPY/EXPUNGE work and could double-file a message.
 _resort_lock = threading.Lock()
-# Whitelist for /api/config. RESORT_MAX_MESSAGES is a setting rather than a
-# credential, but it rides in the same Keychain blob so the CLI scripts pick it
+# Whitelist for /api/config. RESORT_MAX_MESSAGES and ANALYSIS_MODEL are settings
+# rather than credentials, but it rides in the same Keychain blob so the CLI scripts pick it
 # up from os.environ the same way (see set_credential).
 _CREDENTIAL_KEYS = {"IMAP_SERVER", "IMAP_PORT", "IMAP_USERNAME", "IMAP_PASSWORD",
                     "SMTP_SERVER", "SMTP_PORT", "ANTHROPIC_API_KEY",
-                    "RESORT_MAX_MESSAGES"}
+                    "RESORT_MAX_MESSAGES", "ANALYSIS_MODEL"}
 
 CLAUDE_BATCH_SIZE = 50
 _INBOX_JOB_MAX_AGE = 600  # seconds a finished job's state is kept around for polling
@@ -282,9 +291,12 @@ def config():
         "SMTP_PORT": get_credential("SMTP_PORT"),
         "ANTHROPIC_API_KEY": get_credential("ANTHROPIC_API_KEY"),
         "RESORT_MAX_MESSAGES": get_credential("RESORT_MAX_MESSAGES"),
+        "ANALYSIS_MODEL": analysis_model(),
     }
     return render_template("config.html", cfg=cfg,
-                           resort_default=resortEmail.DEFAULT_MAX_MESSAGES)
+                           resort_default=resortEmail.DEFAULT_MAX_MESSAGES,
+                           analysis_models=ANALYSIS_MODELS,
+                           default_analysis_model=DEFAULT_ANALYSIS_MODEL)
 
 
 # ── API ───────────────────────────────────────────────────────────────────────
@@ -293,6 +305,15 @@ def config():
 def api_inbox_stats():
     count = _inbox_count()
     return jsonify({"inbox_count": count, "connected": count >= 0})
+
+
+@app.route("/api/token-usage")
+def api_token_usage():
+    records = read_token_usage()
+    return jsonify({
+        "last_7_days": summarize_token_usage(records, 7),
+        "last_30_days": summarize_token_usage(records, 30),
+    })
 
 
 def _child_env() -> dict:
@@ -462,6 +483,9 @@ def api_config():
         except (TypeError, ValueError):
             return jsonify({"ok": False,
                             "error": "Max messages per resort must be a whole number (0 = no limit)"}), 400
+    model = data.get("ANALYSIS_MODEL")
+    if model not in (None, "") and model not in ANALYSIS_MODELS:
+        return jsonify({"ok": False, "error": "Unknown analysis model"}), 400
     updated = []
     for key, val in data.items():
         if key in _CREDENTIAL_KEYS and val is not None:
@@ -702,7 +726,7 @@ def _analyze_inbox(progress_cb=None, cancel_event=None) -> dict:
             break
         batch = emails[batch_start:batch_start + CLAUDE_BATCH_SIZE]
         progress_cb("analyzing", batch_start, total_senders)
-        analysis = analyze_with_claude(batch, labels)
+        analysis = analyze_with_claude(batch, labels, caller="inbox-analyze")
         if analysis.get("_error") and not error:
             error = analysis["_error"]
         # analyze_with_claude numbers emails 1..len(batch) local to this call;

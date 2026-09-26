@@ -182,6 +182,97 @@ def setup_logging(log_file: str) -> None:
     )
 
 
+# ── Token-usage log ───────────────────────────────────────────────────────────
+# One JSON line per Anthropic API call, so token spend can be measured over
+# time (and before/after changes like spam pre-filtering or cheaper models).
+# Lives under MAILMATRIX_DATA_DIR like the rules file; MAILMATRIX_TOKEN_LOG
+# overrides the exact path (tests point it at tmp_path).
+
+_token_log_lock = threading.Lock()
+
+
+def token_usage_path() -> Path:
+    override = os.environ.get("MAILMATRIX_TOKEN_LOG")
+    if override:
+        return Path(override)
+    data_dir = os.environ.get("MAILMATRIX_DATA_DIR", os.path.dirname(os.path.abspath(__file__)))
+    return Path(data_dir) / "logs" / "token_usage.jsonl"
+
+
+def _usage_int(value) -> int:
+    # usage.cache_* fields are None when caching wasn't involved
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def log_token_usage(response, *, caller: str, model: str, email_count: int,
+                    path: Optional[Path] = None) -> Optional[dict]:
+    """Append one usage record for an Anthropic `response`. Best-effort: a
+    write failure is logged as a warning and never breaks the caller."""
+    usage = getattr(response, "usage", None)
+    record = {
+        "ts": datetime.now().isoformat(timespec="seconds"),
+        "caller": caller,
+        "model": model,
+        "email_count": email_count,
+        "input_tokens": _usage_int(getattr(usage, "input_tokens", 0)),
+        "output_tokens": _usage_int(getattr(usage, "output_tokens", 0)),
+        "cache_read_tokens": _usage_int(getattr(usage, "cache_read_input_tokens", 0)),
+        "cache_write_tokens": _usage_int(getattr(usage, "cache_creation_input_tokens", 0)),
+        "stop_reason": getattr(response, "stop_reason", None),
+    }
+    target = path or token_usage_path()
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with _token_log_lock, open(target, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
+    except OSError as exc:
+        log.warning("Could not write token usage log %s: %s", target, exc)
+        return None
+    return record
+
+
+def read_token_usage(path: Optional[Path] = None) -> List[dict]:
+    """All records in the usage log; a missing file or corrupt line is skipped."""
+    target = path or token_usage_path()
+    records = []
+    try:
+        with open(target, encoding="utf-8") as f:
+            for line in f:
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(rec, dict):
+                    records.append(rec)
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        log.warning("Could not read token usage log %s: %s", target, exc)
+    return records
+
+
+def summarize_token_usage(records: List[dict], days: int,
+                          now: Optional[datetime] = None) -> dict:
+    """Totals for records newer than `days` days before `now`."""
+    cutoff = (now or datetime.now()) - timedelta(days=days)
+    totals = {"runs": 0, "emails": 0, "input_tokens": 0, "output_tokens": 0,
+              "cache_read_tokens": 0, "cache_write_tokens": 0}
+    for rec in records:
+        try:
+            if datetime.fromisoformat(rec["ts"]) < cutoff:
+                continue
+        except (KeyError, TypeError, ValueError):
+            continue
+        totals["runs"] += 1
+        totals["emails"] += _usage_int(rec.get("email_count"))
+        for key in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens"):
+            totals[key] += _usage_int(rec.get(key))
+    totals["total_tokens"] = totals["input_tokens"] + totals["output_tokens"]
+    totals["tokens_per_run"] = round(totals["total_tokens"] / totals["runs"]) if totals["runs"] else 0
+    totals["tokens_per_email"] = round(totals["total_tokens"] / totals["emails"]) if totals["emails"] else 0
+    return totals
+
+
 def validate_email_address(addr: str) -> bool:
     """Return True iff addr looks like an email and contains no IMAP injection chars."""
     return bool(

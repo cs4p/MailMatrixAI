@@ -46,6 +46,23 @@ def _fake_keychain(monkeypatch):
     commonFunctions._invalidate_credentials_cache()
 
 
+@pytest.fixture(autouse=True)
+def _token_log(tmp_path, monkeypatch):
+    """Route the token-usage log to a per-test file so no test appends to the
+    real logs/token_usage.jsonl."""
+    path = tmp_path / "token_usage.jsonl"
+    monkeypatch.setenv("MAILMATRIX_TOKEN_LOG", str(path))
+    return path
+
+
+@pytest.fixture(autouse=True)
+def _reset_analysis_model(monkeypatch):
+    """set_credential mirrors values into os.environ, so a test that picks an
+    analysis model would leak it into later tests. Registering the key with
+    monkeypatch (blank = default model) makes teardown remove it again."""
+    monkeypatch.setenv("ANALYSIS_MODEL", "")
+
+
 @pytest.fixture
 def mock_imap():
     """Pre-configured IMAP mock with sensible defaults for all method calls."""
