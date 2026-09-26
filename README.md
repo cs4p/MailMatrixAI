@@ -1,6 +1,6 @@
 # MailMatrix AI
 
-An email management pipeline with a Flask web UI. Connects to any IMAP server to automatically file incoming mail into folders, and generates AI-powered daily summary reports using Claude.
+An email management pipeline with a Flask web UI. Connects to any IMAP server to automatically file incoming mail into folders, and builds AI-powered daily summaries with Claude.
 
 ## How it works
 
@@ -8,7 +8,7 @@ Four CLI scripts handle the core pipeline:
 
 1. **`emailRulesInit.py`** — Crawls all `MailMatrixCategories/*` IMAP folders, extracts the sender address from every message, and writes `emailRules.json` (your filing rules).
 2. **`sortEmail.py`** — Reads `emailRules.json` and moves matching INBOX messages into their folders.
-3. **`emailSummary.py`** — Generates a daily HTML report: action-required items, unmatched INBOX emails with Claude-suggested folders, and a log of what was filed.
+3. **`emailSummary.py`** — The daily summary: action-required items, unmatched INBOX emails with Claude-suggested folders, and what was filed. The web UI builds it live at `/summary/<date>` (nothing is saved to disk); the CLI prints it as text.
 4. **`resortEmail.py`** — Occasional cleanup: re-checks every already-filed message against the current rules, adding missing copies and removing ones whose sender no longer matches. Dry run by default.
 
 The web UI (`app.py`) wraps all three scripts and adds a rules browser with search, faceted filtering, and inline editing, plus a full **Mail** client (`/mail`) — browse every folder, read messages (with sanitized HTML rendering and attachment downloads), compose/reply/forward over SMTP, create labels, and drag-and-drop a message onto a `MailMatrixCategories/*` label to move it and auto-create a filing rule.
@@ -87,10 +87,10 @@ The server is configurable via environment variables: `MAILMATRIX_HOST`
 
 | Page | Path | What it does |
 |---|---|---|
-| Dashboard | `/` | Inbox count, sort button, generate summaries for any date |
+| Dashboard | `/` | Inbox count, sort button, live per-day counts linking to each day's summary |
 | Mail | `/mail` | Full mail client: browse folders, read/compose/reply/forward, drag-and-drop filing |
 | AI Inbox | `/inbox` | Claude-analyzed inbox recommendations |
-| Summaries | `/summaries` | Browse and view saved HTML reports |
+| Summary | `/summary/<date>` | Live daily summary: need attention, unfiled senders with Accept buttons, filed mail |
 | Rules | `/rules` | Search and edit filing rules by sender or domain; **Resort Now** reconciles filed mail |
 | Config | `/config` | Update credentials, resort limit, test IMAP connection |
 
@@ -99,9 +99,8 @@ The server is configurable via environment variables: `MAILMATRIX_HOST`
 ```bash
 python emailRulesInit.py              # rebuild emailRules.json from mailbox history
 python sortEmail.py                   # file today's INBOX messages
-python emailSummary.py                # summary for today
-python emailSummary.py 2026-06-27     # summary for a specific date
-python emailSummary.py --no-serve     # generate report without opening a browser
+python emailSummary.py                # print today's summary
+python emailSummary.py 2026-06-27     # print the summary for a specific date
 python resortEmail.py                 # dry run: report what a resort would change
 python resortEmail.py --apply         # perform the resort
 python resortEmail.py --apply --limit 500   # cap how many filed messages are examined
@@ -210,7 +209,7 @@ commonFunctions.py     Shared IMAP utilities, retry logic, header parsing
 emailRulesInit.py      Crawl labels → emailRules.json
 sortEmail.py           Sort INBOX using emailRules.json
 resortEmail.py         Reconcile already-filed mail against emailRules.json
-emailSummary.py        Generate daily HTML report with Claude analysis
+emailSummary.py        Daily summary: mailbox collection + cached Claude analysis, text CLI
 cleanupRules.py        Interactive rules optimizer (also backs the /cleanup page)
 electron/              Electron desktop wrapper (npm start)
 templates/             Jinja2 page templates

@@ -6,7 +6,7 @@ FROM python:3.14-slim
 #   the desktop; in a Linux container there is no Keychain, so we pin the null
 #   backend. keyring.get_password() then returns None and commonFunctions falls
 #   back to os.environ — i.e. the env vars / K8s Secret below.
-# - MAILMATRIX_DATA_DIR: learned rules (emailRules.json) + generated summaries
+# - MAILMATRIX_DATA_DIR: learned rules (emailRules.json) + token-usage log
 #   are written here; mount a volume at this path to persist them.
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \

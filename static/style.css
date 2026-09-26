@@ -328,36 +328,7 @@ a:hover { text-decoration: underline; }
 
 .activity-time { color: var(--text-secondary); font-variant-numeric: tabular-nums; margin-right: .5rem; }
 
-/* ── Summary grid ─────────────────────────────────────────────────────────── */
-.summary-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-  gap: 1rem;
-}
-
-.summary-card {
-  background: var(--white);
-  border-radius: var(--radius);
-  box-shadow: var(--card-shadow);
-  padding: 1.5rem;
-  text-decoration: none;
-  color: var(--text);
-  display: flex;
-  flex-direction: column;
-  gap: .4rem;
-  transition: box-shadow .15s, transform .15s;
-  position: relative;
-}
-
-.summary-card:hover {
-  box-shadow: 0 4px 16px rgba(0,0,0,.12);
-  transform: translateY(-2px);
-  text-decoration: none;
-}
-
-.summary-icon { font-size: 1.5rem; color: var(--blue); }
-.summary-label { font-weight: 700; font-size: 1.05rem; }
-.summary-generated-at { font-size: .75rem; color: var(--text-secondary); }
+/* ── Per-day summary stats (dashboard week grid) ──────────────────────────── */
 .summary-stats {
   display: flex;
   flex-wrap: wrap;
@@ -366,28 +337,33 @@ a:hover { text-decoration: underline; }
   color: var(--text-secondary);
 }
 .summary-stat strong { color: var(--text); }
-.summary-filename { font-size: .75rem; color: var(--text-secondary); }
-.summary-arrow { position: absolute; top: 1.5rem; right: 1.5rem; color: var(--text-secondary); font-size: 1.1rem; }
-.summary-refresh {
-  position: absolute;
-  top: 1.3rem;
-  right: 3rem;
-  width: 1.6rem;
-  height: 1.6rem;
+
+/* ── Live summary page ────────────────────────────────────────────────────── */
+[hidden] { display: none !important; }
+
+.summary-nav {
   display: flex;
   align-items: center;
-  justify-content: center;
-  border-radius: 50%;
-  color: var(--text-secondary);
-  font-size: 1.05rem;
-  line-height: 1;
-  cursor: pointer;
-  transition: background .15s, color .15s;
+  gap: .5rem;
+  flex-wrap: wrap;
 }
-.summary-refresh:hover { background: rgba(0,102,204,.12); color: var(--blue); }
-.summary-refresh.spinning { animation: summary-spin .8s linear infinite; color: var(--blue); }
-.summary-card.refreshing { opacity: .7; pointer-events: none; }
-@keyframes summary-spin { to { transform: rotate(360deg); } }
+.summary-progress {
+  display: flex;
+  align-items: center;
+  gap: .75rem;
+  flex-wrap: wrap;
+  margin-bottom: 1rem;
+}
+.summary-progress .progress-bar-track { flex: 1; min-width: 160px; }
+.filed-group { margin: .75rem 0; }
+.filed-group h3 { font-size: .875rem; color: #3c3c43; margin: 0 0 .4rem; }
+.filed-item {
+  font-size: .8rem;
+  padding: .3rem 0;
+  border-bottom: 1px solid #f0f0f0;
+  color: #3c3c43;
+}
+.filed-item:last-child { border-bottom: none; }
 
 /* ── Empty state ──────────────────────────────────────────────────────────── */
 .empty-state {

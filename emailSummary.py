@@ -1,23 +1,18 @@
+import hashlib
 import imaplib
 import json
 import logging
-import os
 import re
-import socket
-import socketserver
-import subprocess
 import sys
-import webbrowser
+import threading
+import time
 from datetime import date, datetime
-from html import escape as _e
-from http.server import BaseHTTPRequestHandler
 from typing import Callable, Dict, List, Optional
 
 import anthropic
 from commonFunctions import (
     add_sender_to_label_rule,
     connect_to_imap,
-    decode_header_value,
     ensure_mailbox,
     extract_body_snippet,
     extract_email_address,
@@ -35,7 +30,6 @@ from commonFunctions import (
 )
 
 log = logging.getLogger(__name__)
-_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Models selectable for inbox analysis (ANALYSIS_MODEL setting on /config).
 # Classification + filing suggestions is a simple structured task, so the
@@ -64,166 +58,6 @@ def analysis_model() -> str:
     """The configured analysis model, or the default when unset/unknown."""
     model = (get_credential("ANALYSIS_MODEL") or "").strip()
     return model if model in ANALYSIS_MODELS else DEFAULT_ANALYSIS_MODEL
-
-# ── CSS & JS as plain strings (no brace-doubling needed) ─────────────────────
-
-_CSS = """\
-*, *::before, *::after { box-sizing: border-box; }
-body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  max-width: 860px; margin: 0 auto; padding: 2rem 1.5rem;
-  background: #f5f5f7; color: #1d1d1f; line-height: 1.5;
-}
-h1 { font-size: 1.75rem; font-weight: 700; margin: 0 0 .5rem; }
-.report-meta {
-  display: flex; align-items: center; justify-content: space-between;
-  gap: 1rem; flex-wrap: wrap; margin-bottom: 1.5rem;
-}
-.generated-at { font-size: .8rem; color: #86868b; }
-.refresh-btn {
-  padding: .35rem .9rem; background: #0066cc; color: white;
-  border: none; border-radius: 8px; cursor: pointer;
-  font-size: .8rem; font-weight: 600; white-space: nowrap;
-  transition: background .15s, transform .1s;
-}
-.refresh-btn:hover:not(:disabled) { background: #0052a3; transform: translateY(-1px); }
-.refresh-btn:disabled { background: #99c2e8; cursor: default; transform: none; }
-.stat-bar { display: flex; gap: 1rem; margin-bottom: 2rem; flex-wrap: wrap; }
-.stat {
-  background: white; padding: 1rem 1.5rem; border-radius: 12px;
-  box-shadow: 0 1px 4px rgba(0,0,0,.08); min-width: 120px;
-}
-.stat-num { font-size: 2rem; font-weight: 700; line-height: 1; }
-.stat-label { font-size: .75rem; text-transform: uppercase; letter-spacing: .06em; color: #86868b; margin-top: .25rem; }
-.red { color: #ff3b30; }
-.orange { color: #ff9500; }
-.green { color: #34c759; }
-.blue { color: #0066cc; }
-section {
-  background: white; border-radius: 16px; padding: 1.5rem;
-  margin: 1.25rem 0; box-shadow: 0 1px 4px rgba(0,0,0,.08);
-}
-h2 {
-  font-size: .75rem; font-weight: 600; text-transform: uppercase;
-  letter-spacing: .1em; color: #86868b; margin: 0 0 1rem;
-  padding-bottom: .75rem; border-bottom: 1px solid #f0f0f0;
-}
-.section-desc { font-size: .8rem; color: #86868b; margin: -.25rem 0 1rem; }
-.empty { color: #86868b; font-size: .875rem; font-style: italic; }
-.email-card { border: 1px solid #e5e5ea; border-radius: 10px; padding: 1rem; margin: .75rem 0; }
-.action-card { border-left: 3px solid #ff3b30; }
-.email-subject { font-weight: 600; font-size: .95rem; }
-.email-meta { font-size: .8rem; color: #86868b; margin-top: .2rem; }
-.email-preview {
-  font-size: .8rem; color: #6e6e73; margin: .6rem 0;
-  padding: .6rem .75rem; background: #f9f9f9;
-  border-radius: 6px; font-style: italic;
-}
-.action-reason { font-size: .85rem; color: #ff3b30; margin-top: .4rem; }
-.suggestion { display: flex; align-items: center; gap: .6rem; margin-top: .75rem; flex-wrap: wrap; }
-.label-tag {
-  font-size: .8rem; font-family: 'SF Mono', 'Fira Code', monospace;
-  padding: .25rem .6rem; border-radius: 6px; background: #e8f4fd; color: #0066cc;
-}
-.label-tag.new-label { background: #fff3e0; color: #e65100; }
-.new-badge {
-  font-size: .7rem; background: #fff3e0; color: #e65100;
-  padding: .15rem .4rem; border-radius: 4px; border: 1px solid #ffcc80;
-}
-.label-select {
-  font-size: .8rem; font-family: 'SF Mono', 'Fira Code', monospace;
-  padding: .25rem .5rem; border-radius: 6px; border: 1px solid #c7d8ed;
-  background: #e8f4fd; color: #0066cc; cursor: pointer;
-  max-width: 220px;
-}
-.label-select:focus { outline: 2px solid #0066cc; outline-offset: 1px; }
-.label-select:disabled { opacity: .6; cursor: default; }
-.suggestion-reason { font-size: .8rem; color: #86868b; flex: 1; min-width: 0; }
-.accept-btn {
-  padding: .35rem .9rem; background: #34c759; color: white;
-  border: none; border-radius: 8px; cursor: pointer;
-  font-size: .8rem; font-weight: 600; white-space: nowrap;
-  transition: background .15s, transform .1s;
-}
-.accept-btn:hover:not(:disabled) { background: #28a745; transform: translateY(-1px); }
-.accept-btn:disabled { background: #a8d5b5; cursor: default; transform: none; }
-.accepted-msg { font-size: .85rem; color: #34c759; font-weight: 600; }
-.count-badge {
-  display: inline-block; background: #86868b; color: white;
-  font-size: .65rem; font-weight: 700; padding: .1rem .4rem;
-  border-radius: 10px; margin-left: .3rem; vertical-align: middle;
-}
-.filed-label { margin: .75rem 0; }
-.filed-label h3 { font-size: .875rem; color: #3c3c43; margin: 0 0 .4rem; }
-.filed-item { font-size: .8rem; padding: .3rem 0; border-bottom: 1px solid #f0f0f0; color: #3c3c43; }
-.filed-item:last-child { border-bottom: none; }
-.error-note {
-  background: #fff3cd; border: 1px solid #ffc107;
-  padding: .75rem 1rem; border-radius: 8px; font-size: .875rem;
-}
-"""
-
-_JS = """\
-async function handleAccept(btn) {
-  const fromAddr = btn.dataset.from;
-  const sug = btn.closest('.suggestion');
-  const select = sug.querySelector('.label-select');
-  const label = select ? select.value : btn.dataset.label;
-  btn.disabled = true;
-  btn.textContent = 'Moving…';
-  if (select) select.disabled = true;
-  try {
-    const res = await fetch('/accept', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest'},
-      body: JSON.stringify({from_addr: fromAddr, label: label})
-    });
-    const data = await res.json();
-    if (data.ok) {
-      const shortLabel = label.replace('MailMatrixCategories/', '');
-      const span = document.createElement('span');
-      span.className = 'accepted-msg';
-      span.textContent = '✓ Moved to ' + shortLabel + ' · emailRules.json updated';
-      sug.replaceChildren(span);
-    } else {
-      btn.disabled = false;
-      btn.textContent = 'Accept';
-      if (select) select.disabled = false;
-      alert('Error: ' + (data.error || 'Unknown error'));
-    }
-  } catch (err) {
-    btn.disabled = false;
-    btn.textContent = 'Accept';
-    if (select) select.disabled = false;
-    alert('Error: ' + err.message);
-  }
-}
-
-async function refreshReport(btn) {
-  const dateStr = btn.dataset.date;
-  btn.disabled = true;
-  btn.textContent = 'Refreshing…';
-  try {
-    const res = await fetch('/api/generate-summary', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest'},
-      body: JSON.stringify({date: dateStr})
-    });
-    const data = await res.json();
-    if (data.ok) {
-      location.reload();
-    } else {
-      btn.disabled = false;
-      btn.textContent = 'Refresh';
-      alert('Error: ' + (data.error || 'Unknown error'));
-    }
-  } catch (err) {
-    btn.disabled = false;
-    btn.textContent = 'Refresh';
-    alert('Error: ' + err.message);
-  }
-}
-"""
 
 # ── IMAP helpers ──────────────────────────────────────────────────────────────
 
@@ -440,160 +274,6 @@ Rules:
             '_error': f'AI response was empty or malformed (stop_reason={response.stop_reason})'}
 
 
-# ── HTML report builder ───────────────────────────────────────────────────────
-
-def build_html_report(
-    target_date: date,
-    inbox_emails: List[dict],
-    filed_emails: Dict[str, List[dict]],
-    analysis: dict,
-    available_labels: Optional[List[str]] = None,
-    generated_at: Optional[datetime] = None,
-) -> str:
-    generated_at = generated_at or datetime.now()
-    total_filed = sum(len(v) for v in filed_emails.values())
-    total_processed = len(inbox_emails) + total_filed
-    action_items = analysis.get('action_required', [])
-    filing_suggestions = {
-        s['index']: s
-        for s in analysis.get('filing_suggestions', [])
-        if 'index' in s
-    }
-    error_note = analysis.get('_error', '')
-
-    # Action Required
-    if error_note:
-        action_html = f'<div class="error-note">AI analysis unavailable: {_e(error_note)}</div>'
-    elif action_items:
-        cards = []
-        for item in action_items:
-            cards.append(
-                f'<div class="email-card action-card">'
-                f'<div class="email-subject">{_e(item.get("subject", "(no subject)"))}</div>'
-                f'<div class="email-meta">From: {_e(item.get("from", ""))}</div>'
-                f'<div class="action-reason">{_e(item.get("reason", ""))}</div>'
-                f'</div>'
-            )
-        action_html = '\n'.join(cards)
-    else:
-        action_html = '<p class="empty">No emails require immediate action.</p>'
-
-    # Unmatched Emails
-    if inbox_emails:
-        cards = []
-        for i, em in enumerate(inbox_emails, 1):
-            sug = filing_suggestions.get(i, {})
-            count = em.get('count', 1)
-            count_badge = f'<span class="count-badge">{count}×</span>' if count > 1 else ''
-
-            preview = ''
-            if em.get('body_snippet'):
-                preview = f'<div class="email-preview">{_e(em["body_snippet"][:200])}</div>'
-
-            suggestion_html = ''
-            if sug.get('suggested_label'):
-                suggested = sug['suggested_label']
-                is_new = sug.get('is_new_label', False)
-                reason = f'<span class="suggestion-reason">{_e(sug.get("reason", ""))}</span>'
-
-                # Build option list: all known labels + suggested (if new) pre-selected
-                all_opts = list(available_labels or [])
-                if suggested not in all_opts:
-                    all_opts = [suggested] + all_opts
-                options_html = ''.join(
-                    f'<option value="{_e(lbl)}"'
-                    f'{" selected" if lbl == suggested else ""}>'
-                    f'{_e(lbl.replace("MailMatrixCategories/", ""))}'
-                    f'</option>'
-                    for lbl in all_opts
-                )
-                new_badge = ' <span class="new-badge">new label</span>' if is_new else ''
-                select_html = f'<select class="label-select">{options_html}</select>{new_badge}'
-                btn = (
-                    f'<button class="accept-btn"'
-                    f' data-from="{_e(em["from_addr"])}"'
-                    f' onclick="handleAccept(this)">Accept</button>'
-                )
-                suggestion_html = (
-                    f'<div class="suggestion">'
-                    f'{select_html}'
-                    f'{reason}{btn}'
-                    f'</div>'
-                )
-
-            cards.append(
-                f'<div class="email-card">'
-                f'<div class="email-subject">{_e(em.get("subject", "(no subject)"))}{count_badge}</div>'
-                f'<div class="email-meta">From: {_e(em.get("from_display", em.get("from_addr", "")))}</div>'
-                f'<div class="email-meta">Date: {_e(em.get("date", ""))}</div>'
-                f'{preview}{suggestion_html}'
-                f'</div>'
-            )
-        unmatched_html = '\n'.join(cards)
-    else:
-        unmatched_html = '<p class="empty">No unmatched emails for this date.</p>'
-
-    # Filed Emails
-    if total_filed > 0:
-        groups = []
-        for label in sorted(filed_emails.keys()):
-            emails = filed_emails[label]
-            if not emails:
-                continue
-            short = _e(label.replace('MailMatrixCategories/', ''))
-            items = ''.join(
-                f'<div class="filed-item"><strong>{_e(em.get("subject", "(no subject)"))}</strong>'
-                f' — {_e(em.get("from_display", em.get("from_addr", "")))}</div>'
-                for em in emails
-            )
-            groups.append(
-                f'<div class="filed-label">'
-                f'<h3>{short} <span class="count-badge">{len(emails)}</span></h3>'
-                f'{items}</div>'
-            )
-        filed_html = '\n'.join(groups)
-    else:
-        filed_html = '<p class="empty">No emails were filed on this date.</p>'
-
-    date_heading = f"{target_date.strftime('%B')} {target_date.day}, {target_date.year}"
-    generated_heading = generated_at.strftime('%b %d, %Y at %I:%M %p')
-
-    return (
-        f'<!DOCTYPE html>\n<html lang="en">\n<head>\n'
-        f'  <meta charset="utf-8">\n'
-        f'  <meta name="viewport" content="width=device-width, initial-scale=1">\n'
-        f'  <title>Email Summary — {date_heading}</title>\n'
-        f'  <style>{_CSS}</style>\n'
-        f'</head>\n<body>\n'
-        f'  <h1>Email Summary — {date_heading}</h1>\n'
-        f'  <div class="report-meta">\n'
-        f'    <span class="generated-at">Generated {_e(generated_heading)}</span>\n'
-        f'    <button class="refresh-btn" data-date="{target_date.isoformat()}"'
-        f' onclick="refreshReport(this)">↻ Refresh</button>\n'
-        f'  </div>\n'
-        f'  <div class="stat-bar">\n'
-        f'    <div class="stat"><div class="stat-num blue">{total_processed}</div>'
-        f'<div class="stat-label">Processed</div></div>\n'
-        f'    <div class="stat"><div class="stat-num red">{len(action_items)}</div>'
-        f'<div class="stat-label">Need Attention</div></div>\n'
-        f'    <div class="stat"><div class="stat-num orange">{len(inbox_emails)}</div>'
-        f'<div class="stat-label">Unfiled</div></div>\n'
-        f'    <div class="stat"><div class="stat-num green">{total_filed}</div>'
-        f'<div class="stat-label">Filed</div></div>\n'
-        f'  </div>\n'
-        f'  <section>\n    <h2>Action Required</h2>\n    {action_html}\n  </section>\n'
-        f'  <section>\n    <h2>Unmatched Emails</h2>\n'
-        f'    <p class="section-desc">In INBOX with no matching filing rule. '
-        f'Accept a suggestion to move the email and update emailRules.json.</p>\n'
-        f'    {unmatched_html}\n  </section>\n'
-        f'  <section>\n    <h2>Filed Emails</h2>\n'
-        f'    <p class="section-desc">Automatically filed by sortEmail.py.</p>\n'
-        f'    {filed_html}\n  </section>\n'
-        f'  <script>{_JS}</script>\n'
-        f'</body>\n</html>'
-    )
-
-
 # ── Accept handler (IMAP move + rules update) ─────────────────────────────────
 
 def accept_filing(
@@ -669,253 +349,303 @@ def accept_filing(
     return {'ok': True, 'moved': moved, 'copy_failed': copy_failed}
 
 
-# ── Report generation pipeline ────────────────────────────────────────────────
+# ── Daily summary: live data, no saved files ─────────────────────────────────
+#
+# A summary is built on demand from the mailbox as it is now: collect_day()
+# reads the day's filed + unmatched INBOX mail (IMAP only), analyze_senders()
+# adds Claude's action/filing analysis. Nothing is written to disk; the only
+# state is ANALYSIS_CACHE, so re-opening a summary doesn't pay for the same
+# analysis twice.
 
-class ReportGenerationError(Exception):
-    """Raised when a report can't be generated (e.g. credentials not configured)."""
+class SummaryError(Exception):
+    """Raised when a summary can't be built (e.g. credentials not configured)."""
 
 
-def generate_report(target_date: date, run_sort: bool = True) -> dict:
-    """Sort (optionally), fetch filed + unmatched-inbox emails for target_date,
-    analyze with Claude, build the HTML report, and save it to disk.
-
-    Returns {'html', 'output_file', 'unmatched', 'action_required', 'filed'}.
-    Raises ReportGenerationError if IMAP credentials aren't configured.
-    """
-    if run_sort:
-        # Sort inbox first so the summary reflects the post-filing state
-        sort_script = os.path.join(_SCRIPT_DIR, "sortEmail.py")
-        log.info("Running sortEmail.py before generating summary...")
-        sort_result = subprocess.run(
-            [sys.executable, sort_script],
-            capture_output=True, text=True, timeout=180,
-        )
-        if sort_result.returncode == 0:
-            log.info("Sort completed successfully")
-        else:
-            log.warning(
-                "sortEmail.py exited with code %d — continuing anyway: %s",
-                sort_result.returncode,
-                sort_result.stderr[-500:],
-            )
-
-    imap_server = get_credential("IMAP_SERVER")
-    imap_port = int(get_credential("IMAP_PORT", "993"))
+def open_imap() -> imaplib.IMAP4_SSL:
+    """Connect + log in with the configured credentials."""
+    server = get_credential("IMAP_SERVER")
+    port = int(get_credential("IMAP_PORT", "993"))
     username = get_credential("IMAP_USERNAME")
     password = get_credential("IMAP_PASSWORD")
-    if not (imap_server and username and password):
-        raise ReportGenerationError(
-            "IMAP credentials not configured — set them via the web UI Config page"
-        )
+    if not (server and username and password):
+        raise SummaryError("IMAP credentials not configured — set them via the web UI Config page")
+    return connect_to_imap(server, username, password, port)
 
-    log.info("Connecting to %s:%d ...", imap_server, imap_port)
-    imap = connect_to_imap(imap_server, username, password, imap_port)
-    log.info("Authenticated as %s", username)
 
+def _without_msg_id(email_entry: dict) -> dict:
+    # msg_id is a per-connection sequence number (bytes) — meaningless to a
+    # caller and not JSON-serializable.
+    return {k: v for k, v in email_entry.items() if k != 'msg_id'}
+
+
+def collect_day(imap: imaplib.IMAP4_SSL, target_date: date) -> dict:
+    """The day's mail straight from the mailbox — no AI.
+
+    Returns {date, labels, filed: {label: [email]}, inbox: [one entry per
+    sender, with count], counts: {filed, unfiled, senders}}.
+    """
     date_filter = imap_date(target_date)
+    labels = get_all_labels(imap, 'MailMatrixCategories')
 
-    try:
-        labels = get_all_labels(imap, 'MailMatrixCategories')
-        log.info("Found %d MailMatrixCategories labels", len(labels))
+    filed: Dict[str, List[dict]] = {}
+    for label in labels:
+        emails = fetch_folder_emails(imap, label, date_filter)
+        if emails:
+            filed[label] = [_without_msg_id(em) for em in emails]
 
-        filed_emails: Dict[str, List[dict]] = {}
-        for label in labels:
-            emails = fetch_folder_emails(imap, label, date_filter)
-            if emails:
-                filed_emails[label] = emails
-
-        raw_inbox = fetch_inbox_with_body(imap, date_filter)
-
-    finally:
-        imap.logout()
-
-    inbox_emails = deduplicate_inbox_emails(raw_inbox)
-    log.info("INBOX: %d messages, %d unique senders", len(raw_inbox), len(inbox_emails))
-
-    analysis = analyze_with_claude(inbox_emails, labels)
-    generated_at = datetime.now()
-
-    report = build_html_report(
-        target_date, inbox_emails, filed_emails, analysis, labels,
-        generated_at=generated_at,
-    )
-
-    total_filed = sum(len(v) for v in filed_emails.values())
-    unfiled = len(inbox_emails)
-    need_attention = len(analysis.get('action_required', []))
-    processed = unfiled + total_filed
-
-    # L5: anchor output to the script's directory, not CWD (MAILMATRIX_DATA_DIR
-    # relocates it to a mounted volume in the container image).
-    output_dir = os.path.join(os.environ.get("MAILMATRIX_DATA_DIR", _SCRIPT_DIR), "emailSummary")
-    os.makedirs(output_dir, exist_ok=True)
-    output_file = os.path.join(output_dir, f"email_summary_{target_date.strftime('%Y-%m-%d')}.html")
-    with open(output_file, 'w', encoding='utf-8') as f:
-        f.write(report)
-    log.info("Report written to %s", output_file)
-
-    # Sidecar JSON so the Summaries list page can show these stats without
-    # having to scrape/parse the saved HTML report.
-    meta_file = os.path.join(output_dir, f"email_summary_{target_date.strftime('%Y-%m-%d')}.json")
-    with open(meta_file, 'w', encoding='utf-8') as f:
-        json.dump({
-            'processed': processed,
-            'need_attention': need_attention,
-            'unfiled': unfiled,
-            'filed': total_filed,
-            'generated_at': generated_at.isoformat(),
-        }, f)
+    raw_inbox = fetch_inbox_with_body(imap, date_filter)
+    inbox = [_without_msg_id(em) for em in deduplicate_inbox_emails(raw_inbox)]
 
     return {
-        'html': report,
-        'output_file': output_file,
-        'unmatched': unfiled,
-        'action_required': need_attention,
-        'filed': total_filed,
-        'processed': processed,
+        'date': target_date.isoformat(),
+        'labels': labels,
+        'filed': filed,
+        'inbox': inbox,
+        'counts': {
+            'filed': sum(len(v) for v in filed.values()),
+            'unfiled': len(raw_inbox),
+            'senders': len(inbox),
+        },
     }
 
 
-# ── Local report server ───────────────────────────────────────────────────────
-
-def _free_port() -> int:
-    with socket.socket() as s:
-        s.bind(('', 0))
-        return s.getsockname()[1]
-
-
-def serve_report(html: str, target_date: date, accept_fn: Callable[[dict], dict]) -> None:
-    port = _free_port()
-    state = {'html': html}
-
-    class Handler(BaseHTTPRequestHandler):
-        def do_GET(self):
-            if self.path == '/':
-                body = state['html'].encode('utf-8')
-                self.send_response(200)
-                self.send_header('Content-Type', 'text/html; charset=utf-8')
-                self.send_header('Content-Length', str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-            else:
-                self.send_response(404)
-                self.end_headers()
-
-        def do_POST(self):
-            if self.path == '/accept':
-                length = int(self.headers.get('Content-Length', 0))
-                data = json.loads(self.rfile.read(length))
-                result = accept_fn(data)
-                payload = json.dumps(result).encode('utf-8')
-                self.send_response(200)
-                self.send_header('Content-Type', 'application/json')
-                self.send_header('Content-Length', str(len(payload)))
-                self.end_headers()
-                self.wfile.write(payload)
-            elif self.path == '/api/generate-summary':
-                length = int(self.headers.get('Content-Length', 0))
-                try:
-                    body = json.loads(self.rfile.read(length)) if length else {}
-                except json.JSONDecodeError:
-                    body = {}
-                date_str = (body.get('date') or '').strip()
-                try:
-                    refresh_date = datetime.strptime(date_str, '%Y-%m-%d').date() if date_str else target_date
-                except ValueError:
-                    refresh_date = target_date
-
-                try:
-                    result = generate_report(refresh_date)
-                    state['html'] = result['html']
-                    status_code = 200
-                    payload = json.dumps({
-                        'ok': True,
-                        'filename': os.path.basename(result['output_file']),
-                    }).encode('utf-8')
-                except ReportGenerationError as exc:
-                    status_code = 400
-                    payload = json.dumps({'ok': False, 'error': str(exc)}).encode('utf-8')
-                except Exception as exc:
-                    log.error("Refresh failed: %s", exc)
-                    status_code = 500
-                    payload = json.dumps({'ok': False, 'error': str(exc)}).encode('utf-8')
-
-                self.send_response(status_code)
-                self.send_header('Content-Type', 'application/json')
-                self.send_header('Content-Length', str(len(payload)))
-                self.end_headers()
-                self.wfile.write(payload)
-            else:
-                self.send_response(404)
-                self.end_headers()
-
-        def log_message(self, *args):
-            pass  # suppress HTTP access log noise
-
-    class _Server(socketserver.ThreadingMixIn, socketserver.TCPServer):
-        allow_reuse_address = True
-        daemon_threads = True
-
-    with _Server(('127.0.0.1', port), Handler) as server:
-        url = f'http://localhost:{port}'
-        log.info("Report server at %s", url)
-        print(f"\nReport ready at {url}")
-        print("Press Ctrl+C to stop.\n")
-        webbrowser.open(url)
-        try:
-            server.serve_forever()
-        except KeyboardInterrupt:
-            print("\nServer stopped.")
+def _count_on(imap: imaplib.IMAP4_SSL, folder: str, date_filter: str) -> int:
+    status, _ = imap_call(lambda: imap.select(f'"{folder}"', readonly=True))
+    if status != 'OK':
+        return 0
+    status, data = imap_call(lambda: imap.search(None, f'ON {date_filter}'))
+    if status != 'OK' or not data or not data[0]:
+        return 0
+    return len(data[0].split())
 
 
-# ── Entry point ───────────────────────────────────────────────────────────────
+def count_day(imap: imaplib.IMAP4_SSL, labels: List[str], target_date: date) -> dict:
+    """Cheap per-day counts (SEARCH only — no FETCH, no AI)."""
+    date_filter = imap_date(target_date)
+    return {
+        'filed': sum(_count_on(imap, label, date_filter) for label in labels),
+        'unfiled': _count_on(imap, 'INBOX', date_filter),
+    }
+
+
+# ── Analysis cache ────────────────────────────────────────────────────────────
+
+class AnalysisCache:
+    """Per-sender analysis results, in memory only (lost on restart — by design,
+    so the dynamic summary writes nothing to disk).
+
+    The key covers everything the result depends on — model, label list, and
+    the sender's message (address, subject, preview, count) — so a new message
+    from a sender, a new label, or a model switch is re-analyzed automatically.
+    """
+
+    def __init__(self, ttl: float = 7 * 24 * 3600, max_entries: int = 5000):
+        self.ttl = ttl
+        self.max_entries = max_entries
+        self._data: Dict[str, tuple] = {}
+        self._lock = threading.Lock()
+
+    @staticmethod
+    def key(model: str, labels: List[str], email_entry: dict) -> str:
+        material = json.dumps([
+            model,
+            sorted(labels),
+            email_entry.get('from_addr', ''),
+            email_entry.get('subject', ''),
+            (email_entry.get('body_snippet') or '')[:300],
+            email_entry.get('count', 1),
+        ], ensure_ascii=False)
+        return hashlib.sha256(material.encode('utf-8')).hexdigest()
+
+    def get(self, key: str) -> Optional[tuple]:
+        """(stored_at, result) if present and fresh, else None."""
+        with self._lock:
+            hit = self._data.get(key)
+            if hit is None:
+                return None
+            if time.time() - hit[0] > self.ttl:
+                del self._data[key]
+                return None
+            return hit
+
+    def put(self, key: str, result: dict) -> None:
+        with self._lock:
+            self._data[key] = (time.time(), result)
+            if len(self._data) > self.max_entries:
+                oldest = sorted(self._data, key=lambda k: self._data[k][0])
+                for k in oldest[:len(self._data) - self.max_entries]:
+                    del self._data[k]
+
+    def clear(self) -> None:
+        with self._lock:
+            self._data.clear()
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._data)
+
+
+ANALYSIS_CACHE = AnalysisCache()
+
+
+def split_by_sender(analysis: dict, batch_len: int) -> List[dict]:
+    """Turn one analyze_with_claude response (1-based indices local to the
+    batch) into one {'action', 'suggestion'} entry per sender. Items with a
+    missing or out-of-range index are dropped — Claude occasionally returns
+    imperfect JSON, and one bad item shouldn't sink the batch.
+    """
+    per = [{'action': None, 'suggestion': None} for _ in range(batch_len)]
+    for field, slot in (('action_required', 'action'), ('filing_suggestions', 'suggestion')):
+        for item in analysis.get(field) or []:
+            idx = item.get('index') if isinstance(item, dict) else None
+            if not isinstance(idx, int) or isinstance(idx, bool) or not (1 <= idx <= batch_len):
+                log.warning("Dropping analysis item with bad index: %r", item)
+                continue
+            per[idx - 1][slot] = {k: v for k, v in item.items() if k != 'index'}
+    return per
+
+
+def analyze_senders(
+    emails: List[dict],
+    labels: List[str],
+    *,
+    cache: Optional[AnalysisCache] = None,
+    force: bool = False,
+    caller: str = "summary",
+    batch_size: int = 50,
+    analyze_fn: Optional[Callable] = None,
+    progress_cb: Optional[Callable] = None,
+    cancel_event: Optional[threading.Event] = None,
+) -> dict:
+    """Action/filing analysis for one-entry-per-sender `emails`, calling Claude
+    only for senders not already in the cache (all of them when force=True), in
+    batches of batch_size. Failed batches are reported, never cached.
+
+    Returns {action_required, filing_suggestions (both with 1-based `index`
+    into emails), error, model, analyzed (senders sent to Claude this call),
+    cached (served from cache), analyzed_at (epoch of the oldest result shown,
+    or None)} — or {'cancelled': True}.
+    """
+    cache = ANALYSIS_CACHE if cache is None else cache
+    analyze_fn = analyze_fn or analyze_with_claude
+    progress_cb = progress_cb or (lambda phase, current, total: None)
+    cancel_event = cancel_event or threading.Event()
+    model = analysis_model()
+
+    keys = [cache.key(model, labels, em) for em in emails]
+    results: List[Optional[dict]] = [None] * len(emails)
+    stamps: List[Optional[float]] = [None] * len(emails)
+    todo = []
+    for i, key in enumerate(keys):
+        hit = None if force else cache.get(key)
+        if hit is None:
+            todo.append(i)
+        else:
+            stamps[i], results[i] = hit
+
+    error = None
+    progress_cb("analyzing", 0, len(todo))
+    for start in range(0, len(todo), batch_size):
+        if cancel_event.is_set():
+            return {'cancelled': True}
+        idxs = todo[start:start + batch_size]
+        analysis = analyze_fn([emails[i] for i in idxs], labels, caller=caller)
+        if analysis.get('_error'):
+            error = error or analysis['_error']
+        else:
+            now = time.time()
+            for i, per_sender in zip(idxs, split_by_sender(analysis, len(idxs))):
+                cache.put(keys[i], per_sender)
+                results[i], stamps[i] = per_sender, now
+        progress_cb("analyzing", start + len(idxs), len(todo))
+
+    action_required, filing_suggestions = [], []
+    for i, per_sender in enumerate(results, 1):
+        if not per_sender:
+            continue
+        if per_sender['action']:
+            action_required.append({**per_sender['action'], 'index': i})
+        if per_sender['suggestion']:
+            filing_suggestions.append({**per_sender['suggestion'], 'index': i})
+
+    shown = [t for t in stamps if t is not None]
+    return {
+        'action_required': action_required,
+        'filing_suggestions': filing_suggestions,
+        'error': error,
+        'model': model,
+        'analyzed': len(todo),
+        'cached': len(emails) - len(todo),
+        'analyzed_at': min(shown) if shown else None,
+    }
+
+
+# ── CLI: print the summary as text ────────────────────────────────────────────
+
+def format_summary_text(day: dict, analysis: dict) -> str:
+    """Plain-text/markdown rendering of a summary (CLI output)."""
+    counts = day['counts']
+    lines = [
+        f"# Email summary — {day['date']}",
+        "",
+        f"{counts['filed'] + counts['unfiled']} processed · "
+        f"{len(analysis.get('action_required', []))} need attention · "
+        f"{counts['unfiled']} unfiled ({counts['senders']} senders) · {counts['filed']} filed",
+    ]
+    if analysis.get('error'):
+        lines += ["", f"AI analysis unavailable: {analysis['error']}"]
+
+    lines += ["", "## Need attention"]
+    items = analysis.get('action_required', [])
+    lines += [f"- {it.get('subject', '(no subject)')} — {it.get('from', '')}: {it.get('reason', '')}"
+              for it in items] or ["- (none)"]
+
+    suggestions = {s['index']: s for s in analysis.get('filing_suggestions', [])}
+    lines += ["", "## Unfiled"]
+    for i, em in enumerate(day['inbox'], 1):
+        count = f" ({em['count']}×)" if em.get('count', 1) > 1 else ""
+        line = f"- {em.get('subject', '(no subject)')}{count} — {em.get('from_display') or em.get('from_addr', '')}"
+        sug = suggestions.get(i)
+        if sug and sug.get('suggested_label'):
+            new = " (new label)" if sug.get('is_new_label') else ""
+            line += f"\n  → {sug['suggested_label']}{new}: {sug.get('reason', '')}"
+        lines.append(line)
+    if not day['inbox']:
+        lines.append("- (none)")
+
+    lines += ["", "## Filed"]
+    for label in sorted(day['filed']):
+        lines.append(f"- {label.replace('MailMatrixCategories/', '')}: {len(day['filed'][label])}")
+    if not day['filed']:
+        lines.append("- (none)")
+    return "\n".join(lines) + "\n"
+
 
 def main() -> None:
     setup_logging('email_summary.log')
 
     args = [a for a in sys.argv[1:] if not a.startswith('--')]
-    no_serve = '--no-serve' in sys.argv
-
     if args:
         try:
             target_date = datetime.strptime(args[0], '%Y-%m-%d').date()
         except ValueError:
-            print("Usage: python emailSummary.py [YYYY-MM-DD] [--no-serve]", file=sys.stderr)
+            print("Usage: python emailSummary.py [YYYY-MM-DD]", file=sys.stderr)
             sys.exit(1)
     else:
         target_date = date.today()
 
-    log.info("Generating email summary for %s", target_date)
-
     try:
-        result = generate_report(target_date)
-    except ReportGenerationError as exc:
+        imap = open_imap()
+    except SummaryError as exc:
         log.error(str(exc))
         sys.exit(1)
+    try:
+        day = collect_day(imap, target_date)
+    finally:
+        imap.logout()
 
-    print(f"Summary written to {result['output_file']}")
-    print(
-        f"  {result['unmatched']} unique unmatched senders, "
-        f"{result['action_required']} action required, "
-        f"{result['filed']} filed"
-    )
-
-    if no_serve:
-        return
-
-    rules_path = os.environ.get(
-        "RULES_PATH",
-        os.path.join(os.environ.get("MAILMATRIX_DATA_DIR", _SCRIPT_DIR), "emailRules.json"),
-    )
-    accept_fn = lambda body: accept_filing(
-        body,
-        get_credential("IMAP_SERVER"),
-        int(get_credential("IMAP_PORT", "993")),
-        get_credential("IMAP_USERNAME"),
-        get_credential("IMAP_PASSWORD"),
-        rules_path,
-    )
-    serve_report(result['html'], target_date, accept_fn)
+    analysis = analyze_senders(day['inbox'], day['labels'])
+    print(format_summary_text(day, analysis), end="")
 
 
 if __name__ == "__main__":

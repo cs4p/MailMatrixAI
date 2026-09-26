@@ -14,7 +14,7 @@
         <a href="/" class="{{ 'active' if request.path == '/' }}">Dashboard</a>
         <a href="/mail" class="{{ 'active' if request.path == '/mail' }}">Mail</a>
         <a href="/inbox" class="{{ 'active' if request.path == '/inbox' }}">AI Inbox</a>
-        <a href="/summaries" class="{{ 'active' if request.path.startswith('/summaries') }}">Summaries</a>
+        <a href="/summary" class="{{ 'active' if request.path.startswith('/summary') }}">Summary</a>
         <a href="/rules" class="{{ 'active' if request.path == '/rules' }}">Rules</a>
         <a href="/cleanup" class="{{ 'active' if request.path == '/cleanup' }}">Cleanup</a>
         <a href="/config" class="{{ 'active' if request.path == '/config' }}">Config</a>
