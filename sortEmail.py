@@ -12,6 +12,7 @@ from commonFunctions import (
     fetch_many,
     get_credential,
     imap_call,
+    parse_headers,
     setup_logging,
 )
 
@@ -81,12 +82,9 @@ def sort_inbox(
                 errors += 1
                 continue
 
-            raw = header_bytes.decode(errors='replace')
-            from_header = ''
-            for line in raw.splitlines():
-                if line.lower().startswith('from:'):
-                    from_header = line[5:].strip()
-                    break
+            # parse_headers unfolds continuation lines — long display names
+            # push the <address> onto a folded second line.
+            from_header = parse_headers(header_bytes.decode(errors='replace'))['from']
 
             if not from_header:
                 skipped += 1
