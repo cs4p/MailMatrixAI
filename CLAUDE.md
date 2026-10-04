@@ -8,7 +8,7 @@ MailMatrixAI is an email management pipeline with a Flask web UI and four CLI sc
 
 1. **`emailRulesInit.py`** — crawls all `MailMatrixCategories/*` labels, extracts sender addresses from every message, and writes `emailRules.json`
 2. **`sortEmail.py`** — reads `emailRules.json` and files INBOX messages into their matching labels (then removes them from INBOX)
-3. **`emailSummary.py`** — generates a daily markdown report: action-required messages, unmatched INBOX emails with Claude-suggested labels, and a list of what was filed where
+3. **`emailSummary.py`** — the daily summary: `collect_day` (filed + unmatched INBOX mail for a date) + `analyze_senders` (Claude action/filing analysis, cached). Served live at `/summary/<date>`; the CLI prints it as text
 4. **`resortEmail.py`** — occasional cleanup: reconciles every `MailMatrixCategories/*` folder against `emailRules.json` (adds missing copies, removes ones the sender no longer matches). Dry run unless `--apply`
 
 On top of these, `app.py` serves a full **Mail client** at `/mail` (browse folders, read/compose/reply/forward, drag-and-drop filing) via the UID-based `/api/mail/*` endpoints — see below.
@@ -117,8 +117,28 @@ Non-negotiable safety rules (tests in `tests/test_resort.py` pin each one):
 - Only `MailMatrixCategories/*` folders are ever read or written; every target
   is re-checked with `validate_label` at write time.
 
-### `emailSummary.py` pipeline
+### `emailSummary.py` / live summary
 
-The HTML report has **Accept** buttons on unmatched email cards. Clicking one POSTs `{from_addr, label}` to `/accept` on the local server, which reconnects to IMAP, moves all INBOX messages from that sender to the label, and patches `emailRules.json`. The server runs until Ctrl+C.
+There are **no saved summary files** — `/summary/<YYYY-MM-DD>` is built on the
+fly each time it's opened. `collect_day()` reads the day's filed + unmatched
+INBOX mail (IMAP only); `analyze_senders()` adds Claude's action/filing
+analysis, batched, through `ANALYSIS_CACHE`. The page is a shell that starts a
+background job (`/api/summary/<date>/start`, same job machinery as `/inbox`) and
+polls it; the job publishes `job["day"]` before the AI step so mailbox data
+renders first. Don't reintroduce writing summaries to disk.
 
-Claude response is parsed as JSON (`action_required`, `filing_suggestions` arrays indexed by email position). Falls back gracefully if Claude doesn't return valid JSON.
+- `ANALYSIS_CACHE` is **in memory only**, keyed by model + label list + the
+  sender's message (address/subject/preview/count), so a new message, label or
+  model re-analyzes automatically. Failed batches are never cached. Re-analyze
+  (`force`) bypasses it. `/inbox` uses the same cache. Tests: the autouse
+  `_clear_analysis_cache` fixture resets it.
+- `/api/summary/counts` (dashboard week grid) uses `SEARCH ON` only and a 5-min
+  cache; `_invalidate_inbox_count()` also clears it, so any code that moves mail
+  must keep calling that.
+- Viewing a summary never sorts the inbox (reads must not mutate the mailbox);
+  the page has an explicit "Sort inbox, then refresh" button.
+- Mail content is untrusted: the page renders it client-side through
+  `esc()`/`escAttr()` (`renderSenderCard`/`renderActionCards` in `static/app.js`,
+  shared with `/inbox`) and never renders message HTML.
+- `python emailSummary.py [date]` prints a text summary to stdout.
+

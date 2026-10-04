@@ -1,4 +1,4 @@
-# Persists learned filing rules (emailRules.json) and generated summaries
+# Persists learned filing rules (emailRules.json) and the token-usage log
 # across pod restarts. Mounted at /data (MAILMATRIX_DATA_DIR) in the pod.
 apiVersion: v1
 kind: PersistentVolumeClaim

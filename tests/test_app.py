@@ -1,8 +1,5 @@
 import json
 import os
-import re
-import subprocess
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -35,19 +32,16 @@ def client(tmp_path):
     rules_file = tmp_path / "emailRules.json"
     rules_file.write_text(json.dumps(SAMPLE_RULES))
 
-    summary_dir = tmp_path / "emailSummary"
-    summary_dir.mkdir()
-
     env_file = tmp_path / ".env"
 
     flask_app.config["TESTING"] = True
     # The inbox count is cached at module level — reset it so tests don't see
     # each other's cached counts.
     flask_app_module._invalidate_inbox_count()
+    flask_app_module._day_analysis.clear()
 
     with (
         patch.object(flask_app_module, "RULES_PATH", rules_file),
-        patch.object(flask_app_module, "SUMMARY_DIR", summary_dir),
         patch.object(flask_app_module, "ENV_PATH", env_file),
     ):
         with flask_app.test_client() as c:
@@ -86,31 +80,6 @@ def test_dashboard_hides_cleanup_widget_when_no_optimizations(client):
     assert b"cleanup-widget" not in resp.data
 
 
-def test_dashboard_summary_row_shows_stats_from_sidecar(client):
-    from datetime import date as _date
-    today_str = _date.today().isoformat()
-    summary_dir = flask_app_module.SUMMARY_DIR
-    (summary_dir / f"email_summary_{today_str}.html").write_text("<html></html>")
-    (summary_dir / f"email_summary_{today_str}.json").write_text(json.dumps({
-        "processed": 42, "need_attention": 3, "unfiled": 5, "filed": 37,
-        "generated_at": f"{today_str}T09:05:00",
-    }))
-
-    resp = client.get("/")
-    html = resp.data.decode()
-    assert "42" in html and "processed" in html
-    assert "3" in html and "need attention" in html
-    assert "5" in html and "unfiled" in html
-    assert "Run" in html and "09:05 AM" in html
-
-
-def test_dashboard_summary_row_no_stats_without_sidecar(client):
-    resp = client.get("/")
-    html = resp.data.decode()
-    assert "summary-stats" not in html
-    assert "summary-generated-at" not in html
-
-
 def test_dashboard_shows_cleanup_widget_when_duplicate_address_exists(client):
     data = flask_app_module._load_rules()
     # File the same address under two labels -> a duplicate-address optimization
@@ -123,39 +92,6 @@ def test_dashboard_shows_cleanup_widget_when_duplicate_address_exists(client):
     assert ">1</span>" in html
     assert "optimization found" in html
     assert 'href="/cleanup"' in html
-
-
-def test_summaries_page_returns_200(client):
-    resp = client.get("/summaries")
-    assert resp.status_code == 200
-
-
-def test_summaries_page_shows_stats_from_sidecar(client):
-    summary_dir = flask_app_module.SUMMARY_DIR
-    (summary_dir / "email_summary_2026-07-16.html").write_text("<html></html>")
-    (summary_dir / "email_summary_2026-07-16.json").write_text(json.dumps({
-        "processed": 42, "need_attention": 3, "unfiled": 5, "filed": 37,
-        "generated_at": "2026-07-16T09:05:00",
-    }))
-
-    resp = client.get("/summaries")
-    html = resp.data.decode()
-    assert "42" in html and "processed" in html
-    assert "3" in html and "need attention" in html
-    assert "5" in html and "unfiled" in html
-    assert "Run Jul 16, 2026 at 09:05 AM" in html
-
-
-def test_summaries_page_omits_stats_without_sidecar(client):
-    # The stat + run-time containers are always in the DOM (so the refresh JS
-    # can populate them in place) but stay hidden until a sidecar exists.
-    summary_dir = flask_app_module.SUMMARY_DIR
-    (summary_dir / "email_summary_2026-07-16.html").write_text("<html></html>")
-
-    resp = client.get("/summaries")
-    html = resp.data.decode()
-    assert 'class="summary-stats" hidden' in html
-    assert 'class="summary-generated-at" hidden' in html
 
 
 def test_rules_page_returns_200(client):
@@ -176,14 +112,31 @@ def test_config_page_returns_200(client):
     assert b"IMAP_SERVER" in resp.data
 
 
-def test_view_summary_not_found(client):
-    resp = client.get("/summaries/nonexistent.html")
-    assert resp.status_code == 404
+def test_dashboard_links_each_day_to_its_live_summary(client):
+    from datetime import date as _date
+    html = client.get("/").data.decode()
+    assert f'href="/summary/{_date.today().isoformat()}"' in html
+    assert "Generate" not in html  # nothing to generate any more
+    assert "/api/summary/counts" in html
+    assert 'id="filed-today"' in html
 
 
-def test_view_summary_rejects_non_html(client):
-    resp = client.get("/summaries/rules.json")
-    assert resp.status_code == 404
+def test_summaries_redirects_to_live_summary(client):
+    resp = client.get("/summaries")
+    assert resp.status_code == 302
+    assert resp.headers["Location"].endswith("/summary")
+
+
+def test_legacy_summary_file_link_redirects_to_that_day(client):
+    resp = client.get("/summaries/email_summary_2026-07-16.html")
+    assert resp.status_code == 302
+    assert resp.headers["Location"].endswith("/summary/2026-07-16")
+
+
+@pytest.mark.parametrize("name", ["nonexistent.html", "rules.json", "email_summary_2026-13-40.html",
+                                  "email_summary_2026-07-16.json"])
+def test_legacy_summary_link_rejects_other_names(client, name):
+    assert client.get(f"/summaries/{name}").status_code == 404
 
 
 # ── /api/inbox-stats ──────────────────────────────────────────────────────────
@@ -407,127 +360,6 @@ def test_api_resort_releases_the_lock_after_a_failure(client):
 
     assert flask_app_module._resort_lock.acquire(blocking=False)
     flask_app_module._resort_lock.release()
-
-
-# ── /api/generate-summary ─────────────────────────────────────────────────────
-
-def test_api_generate_summary_success(client):
-    mock_result = MagicMock()
-    mock_result.returncode = 0
-    mock_result.stdout = ""
-    mock_result.stderr = ""
-
-    with patch("app.subprocess.run", return_value=mock_result):
-        resp = client.post(
-            "/api/generate-summary",
-            data=json.dumps({"date": "2026-06-28"}),
-            content_type="application/json",
-        )
-
-    data = resp.get_json()
-    assert data["ok"] is True
-    assert data["filename"] == "email_summary_2026-06-28.html"
-
-
-def test_api_generate_summary_passes_rules_path_to_child_env(client):
-    mock_result = MagicMock()
-    mock_result.returncode = 0
-    mock_result.stdout = mock_result.stderr = ""
-
-    with patch("app.subprocess.run", return_value=mock_result) as run:
-        client.post("/api/generate-summary",
-                    data=json.dumps({}), content_type="application/json")
-
-    env = run.call_args.kwargs["env"]
-    assert env["RULES_PATH"] == str(flask_app_module.RULES_PATH)
-
-
-def test_api_generate_summary_invalid_date(client):
-    resp = client.post(
-        "/api/generate-summary",
-        data=json.dumps({"date": "not-a-date"}),
-        content_type="application/json",
-    )
-    assert resp.status_code == 400
-    data = resp.get_json()
-    assert data["ok"] is False
-
-
-def test_api_generate_summary_no_date_uses_today(client):
-    mock_result = MagicMock()
-    mock_result.returncode = 0
-    mock_result.stdout = ""
-    mock_result.stderr = ""
-
-    with patch("app.subprocess.run", return_value=mock_result) as mock_run:
-        resp = client.post("/api/generate-summary", data="{}", content_type="application/json")
-
-    data = resp.get_json()
-    assert data["ok"] is True
-    # Should not have a date arg appended (only "--no-serve")
-    call_args = mock_run.call_args[0][0]
-    assert "--no-serve" in call_args
-    assert not any(re.match(r'\d{4}-\d{2}-\d{2}$', str(a)) for a in call_args)
-
-
-def test_api_generate_summary_echoes_sidecar_meta(client):
-    # The refreshed sidecar (normally written by the subprocess) is seeded here
-    # so the endpoint can read it back and echo the counts to the caller.
-    summary_dir = flask_app_module.SUMMARY_DIR
-    (summary_dir / "email_summary_2026-06-28.html").write_text("<html></html>")
-    (summary_dir / "email_summary_2026-06-28.json").write_text(json.dumps({
-        "processed": 11, "need_attention": 2, "unfiled": 4, "filed": 7,
-        "generated_at": "2026-06-28T08:30:00",
-    }))
-
-    mock_result = MagicMock()
-    mock_result.returncode = 0
-    mock_result.stdout = mock_result.stderr = ""
-
-    with patch("app.subprocess.run", return_value=mock_result):
-        resp = client.post(
-            "/api/generate-summary",
-            data=json.dumps({"date": "2026-06-28"}),
-            content_type="application/json",
-        )
-
-    data = resp.get_json()
-    assert data["ok"] is True
-    assert data["processed"] == 11
-    assert data["need_attention"] == 2
-    assert data["unfiled"] == 4
-    assert data["filed"] == 7
-    assert data["generated_at"] == "Jun 28, 2026 at 08:30 AM"
-
-
-# ── /api/summaries/unfiled-dates ──────────────────────────────────────────────
-
-def test_api_summaries_unfiled_dates_returns_only_unfiled_newest_first(client):
-    summary_dir = flask_app_module.SUMMARY_DIR
-    for date_str, unfiled in [("2026-07-10", 3), ("2026-07-11", 0), ("2026-07-12", 5)]:
-        (summary_dir / f"email_summary_{date_str}.html").write_text("<html></html>")
-        (summary_dir / f"email_summary_{date_str}.json").write_text(
-            json.dumps({"processed": 1, "unfiled": unfiled})
-        )
-    # A report with no sidecar at all — no unfiled count, so excluded.
-    (summary_dir / "email_summary_2026-07-13.html").write_text("<html></html>")
-
-    resp = client.get("/api/summaries/unfiled-dates")
-    assert resp.status_code == 200
-    assert resp.get_json()["dates"] == ["2026-07-12", "2026-07-10"]
-
-
-def test_summaries_page_renders_refresh_controls(client):
-    summary_dir = flask_app_module.SUMMARY_DIR
-    (summary_dir / "email_summary_2026-07-16.html").write_text("<html></html>")
-    (summary_dir / "email_summary_2026-07-16.json").write_text(json.dumps({
-        "processed": 1, "need_attention": 0, "unfiled": 2, "filed": 1,
-    }))
-
-    html = client.get("/summaries").data.decode()
-    assert 'class="summary-refresh"' in html
-    assert 'id="refresh-unfiled"' in html
-    assert 'data-date="2026-07-16"' in html
 
 
 # ── /api/rules/delete ─────────────────────────────────────────────────────────
@@ -1052,7 +884,7 @@ def _imap_env(monkeypatch):
 def _run_inbox_job_sync(monkeypatch):
     """Make /start run the job synchronously in the request thread instead of
     spawning a real background thread, so status is immediately final."""
-    monkeypatch.setattr(flask_app_module, "_start_job_thread", flask_app_module._run_inbox_job)
+    monkeypatch.setattr(flask_app_module, "_start_job_thread", flask_app_module._run_job)
 
 
 def _start_and_get_status(client):
@@ -1318,33 +1150,15 @@ def test_post_handlers_tolerate_malformed_json_bodies(client, raw_body):
         "/api/rules/convert-domain",
         "/api/cleanup/collapse-domain",
         "/api/cleanup/resolve-duplicate",
-        "/api/generate-summary",
+        "/api/summary/2026-09-25/start",
     ]
-    # /api/generate-summary treats an empty body as "today" and would spawn
-    # the real emailSummary.py subprocess — stub it out.
-    summary_result = MagicMock(returncode=0, stdout="", stderr="")
-    with patch("app.subprocess.run", return_value=summary_result):
+    # The summary start endpoint launches a background job — don't run it.
+    with patch("app._start_job_thread"):
         for endpoint in endpoints:
             resp = client.post(endpoint, data=raw_body, content_type="application/json")
             # Handlers fall through to their own validation, never a 500 —
             # /api/config treats an empty dict as "nothing to update" (200).
             assert resp.status_code in (200, 400), f"{endpoint} returned {resp.status_code} for {raw_body!r}"
-
-
-# ── _reindexed guards malformed Claude analysis items ─────────────────────────
-
-def test_reindexed_offsets_and_drops_bad_indices():
-    items = [
-        {"index": 1, "from": "a@x.com"},
-        {"index": 2, "from": "b@x.com"},
-        {"from": "missing-index@x.com"},
-        {"index": "3", "from": "string-index@x.com"},
-        {"index": True, "from": "bool-index@x.com"},
-        {"index": 99, "from": "out-of-range@x.com"},
-        "not-a-dict",
-    ]
-    out = flask_app_module._reindexed(items, batch_start=50, batch_len=50)
-    assert [o["index"] for o in out] == [51, 52]
 
 
 def test_api_inbox_analyze_survives_malformed_analysis_items(client, monkeypatch):
@@ -1936,3 +1750,261 @@ def test_api_token_usage_aggregates_by_window(client, _token_log):
     assert data["last_30_days"]["runs"] == 2
     assert data["last_30_days"]["total_tokens"] == 1800
     assert data["last_30_days"]["emails"] == 15
+
+
+# ── live daily summary: /summary/<date> + /api/summary/* ──────────────────────
+
+def _summary_day(date_str="2026-09-25"):
+    return {
+        "date": date_str,
+        "labels": ["MailMatrixCategories/Work"],
+        "filed": {"MailMatrixCategories/Work": [
+            {"from_display": "w@x.com", "from_addr": "w@x.com", "subject": "Filed", "date": "d"}]},
+        "inbox": [
+            {"from_display": "a@x.com", "from_addr": "a@x.com", "subject": "URGENT <script>x</script>",
+             "date": "d", "body_snippet": "hi", "count": 2},
+            {"from_display": "b@y.com", "from_addr": "b@y.com", "subject": "Newsletter",
+             "date": "d", "body_snippet": "", "count": 1},
+        ],
+        "counts": {"filed": 1, "unfiled": 3, "senders": 2},
+    }
+
+
+def _fake_claude(batch, labels, caller="summary"):
+    return {
+        "action_required": [{"index": i, "from": e["from_addr"], "subject": e["subject"], "reason": "reply"}
+                            for i, e in enumerate(batch, 1) if e["subject"].startswith("URGENT")],
+        "filing_suggestions": [{"index": i, "suggested_label": "MailMatrixCategories/Work",
+                                "is_new_label": False, "reason": "work"} for i, _ in enumerate(batch, 1)],
+    }
+
+
+def _start_summary(client, day="2026-09-25", force=False):
+    resp = client.post(f"/api/summary/{day}/start", data=json.dumps({"force": force}),
+                       content_type="application/json")
+    assert resp.status_code == 200, resp.get_json()
+    job_id = resp.get_json()["job_id"]
+    return client.get(f"/api/summary/status/{job_id}").get_json()
+
+
+def test_summary_page_renders_shell_for_today(client):
+    from datetime import date as _date
+    today = _date.today()
+    html = client.get("/summary").data.decode()
+    assert f"{today.strftime('%B')} {today.day}, {today.year}" in html
+    assert f'const DAY = "{today.isoformat()}"' in html
+    assert "Next day" not in html  # nothing after today
+    assert "claude-haiku-4-5" in html  # model labels for the subtitle
+
+
+def test_summary_page_for_past_day_links_both_ways(client):
+    html = client.get("/summary/2026-09-20").data.decode()
+    assert "September 20, 2026" in html
+    assert 'href="/summary/2026-09-19"' in html
+    assert 'href="/summary/2026-09-21"' in html
+
+
+@pytest.mark.parametrize("bad", ["yesterday", "2026-13-01", "2026-9-1", "2026-02-30"])
+def test_summary_page_rejects_invalid_dates(client, bad):
+    assert client.get(f"/summary/{bad}").status_code == 404
+
+
+def test_nav_links_to_live_summary(client):
+    html = client.get("/").data.decode()
+    assert 'href="/summary"' in html
+    assert 'href="/summaries"' not in html
+
+
+def test_api_summary_start_rejects_invalid_date(client):
+    resp = client.post("/api/summary/not-a-date/start", data="{}", content_type="application/json")
+    assert resp.status_code == 400
+    assert resp.get_json()["ok"] is False
+
+
+def test_api_summary_job_returns_day_and_analysis(client, monkeypatch):
+    _run_inbox_job_sync(monkeypatch)
+    imap = MagicMock()
+    with (
+        patch("app.open_imap", return_value=imap),
+        patch("app.collect_day", return_value=_summary_day()) as collect,
+        patch("app.analyze_with_claude", side_effect=_fake_claude) as claude,
+    ):
+        data = _start_summary(client)
+
+    from datetime import date as _date
+    assert collect.call_args.args[1] == _date(2026, 9, 25)
+    imap.logout.assert_called_once()
+    assert data["status"] == "done"
+    assert data["day"]["counts"] == {"filed": 1, "unfiled": 3, "senders": 2}  # visible to pollers
+    analysis = data["result"]["analysis"]
+    assert [a["index"] for a in analysis["action_required"]] == [1]
+    assert [s["index"] for s in analysis["filing_suggestions"]] == [1, 2]
+    assert analysis["analyzed"] == 2 and analysis["cached"] == 0
+    assert claude.call_args.kwargs["caller"] == "summary"
+    # Raw subject goes out as data; the page escapes it when rendering.
+    assert data["result"]["day"]["inbox"][0]["subject"] == "URGENT <script>x</script>"
+
+
+def test_api_summary_second_view_uses_cache_and_force_reanalyzes(client, monkeypatch):
+    _run_inbox_job_sync(monkeypatch)
+    with (
+        patch("app.open_imap", return_value=MagicMock()),
+        patch("app.collect_day", side_effect=lambda imap, d: _summary_day()),
+        patch("app.analyze_with_claude", side_effect=_fake_claude) as claude,
+    ):
+        _start_summary(client)
+        again = _start_summary(client)
+        assert claude.call_count == 1
+        assert again["result"]["analysis"]["cached"] == 2
+
+        forced = _start_summary(client, force=True)
+        assert claude.call_count == 2
+        assert forced["result"]["analysis"]["analyzed"] == 2
+
+
+def test_api_summary_missing_credentials_reports_error(client, monkeypatch):
+    _run_inbox_job_sync(monkeypatch)
+    for key in ("IMAP_SERVER", "IMAP_USERNAME", "IMAP_PASSWORD"):
+        monkeypatch.delenv(key, raising=False)
+    with patch("app.analyze_with_claude") as claude:
+        data = _start_summary(client)
+    assert data["status"] == "error"
+    assert "not configured" in data["result"]["error"]
+    claude.assert_not_called()
+
+
+def test_api_summary_ai_error_still_returns_mailbox_data(client, monkeypatch):
+    _run_inbox_job_sync(monkeypatch)
+    with (
+        patch("app.open_imap", return_value=MagicMock()),
+        patch("app.collect_day", return_value=_summary_day()),
+        patch("app.analyze_with_claude",
+              return_value={"action_required": [], "filing_suggestions": [], "_error": "No credits"}),
+    ):
+        data = _start_summary(client)
+    assert data["status"] == "done"
+    assert data["result"]["analysis"]["error"] == "No credits"
+    assert data["result"]["day"]["counts"]["unfiled"] == 3
+    assert "2026-09-25" not in flask_app_module._day_analysis  # failed analysis not recorded
+
+
+def test_api_summary_cancel(client, monkeypatch):
+    _run_inbox_job_sync(monkeypatch)
+    job = {}
+
+    def cancel_during_analysis(batch, labels, caller="summary"):
+        flask_app_module._inbox_jobs[job["id"]]["cancel_event"].set()
+        return _fake_claude(batch, labels, caller)
+
+    real_new_job = flask_app_module._new_job
+
+    def capture(work, kind):
+        job["id"] = real_new_job(work, kind)
+        return job["id"]
+
+    monkeypatch.setattr(flask_app_module, "_new_job", capture)
+    monkeypatch.setattr(flask_app_module, "CLAUDE_BATCH_SIZE", 1)
+    with (
+        patch("app.open_imap", return_value=MagicMock()),
+        patch("app.collect_day", return_value=_summary_day()),
+        patch("app.analyze_with_claude", side_effect=cancel_during_analysis) as claude,
+    ):
+        data = _start_summary(client)
+    assert data["status"] == "cancelled"
+    assert claude.call_count == 1
+
+    assert client.post(f"/api/summary/cancel/{job['id']}").get_json()["ok"] is True
+
+
+def test_api_summary_status_and_cancel_unknown_job(client):
+    assert client.get("/api/summary/status/nope").status_code == 404
+    assert client.post("/api/summary/cancel/nope").status_code == 404
+
+
+def test_summary_and_inbox_job_ids_are_not_interchangeable(client):
+    with patch("app._start_job_thread"):
+        inbox_id = client.post("/api/inbox-analyze/start").get_json()["job_id"]
+        summary_id = client.post("/api/summary/2026-09-25/start", data="{}",
+                                 content_type="application/json").get_json()["job_id"]
+    assert client.get(f"/api/summary/status/{inbox_id}").status_code == 404
+    assert client.get(f"/api/inbox-analyze/status/{summary_id}").status_code == 404
+
+
+def test_api_summary_writes_no_files(client, monkeypatch, tmp_path):
+    _run_inbox_job_sync(monkeypatch)
+    # Cover every place the old flow could write: DATA_DIR, MAILMATRIX_DATA_DIR, cwd.
+    (tmp_path / "data").mkdir()
+    monkeypatch.setattr(flask_app_module, "DATA_DIR", tmp_path / "data")
+    monkeypatch.setenv("MAILMATRIX_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.chdir(tmp_path / "data")
+    with (
+        patch("app.open_imap", return_value=MagicMock()),
+        patch("app.collect_day", return_value=_summary_day()),
+        patch("app.analyze_with_claude", side_effect=_fake_claude),
+    ):
+        _start_summary(client)
+    assert list((tmp_path / "data").iterdir()) == []
+
+
+# ── /api/summary/counts ───────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("query", ["", "?dates=", "?dates=2026-09-25,nope",
+                                   "?dates=" + ",".join(["2026-09-01"] * 32)])
+def test_api_summary_counts_validates_dates(client, query):
+    resp = client.get("/api/summary/counts" + query)
+    assert resp.status_code == 400
+    assert resp.get_json()["ok"] is False
+
+
+def test_api_summary_counts_one_connection_then_cached(client):
+    imap = MagicMock()
+    with (
+        patch("app.open_imap", return_value=imap) as connect,
+        patch("app.get_all_labels", return_value=["MailMatrixCategories/Work"]),
+        patch("app.count_day", side_effect=lambda imap, labels, d: {"filed": d.day, "unfiled": 1}) as count,
+    ):
+        first = client.get("/api/summary/counts?dates=2026-09-25,2026-09-24").get_json()
+        second = client.get("/api/summary/counts?dates=2026-09-25,2026-09-24").get_json()
+
+    assert first["counts"] == {
+        "2026-09-25": {"filed": 25, "unfiled": 1, "need_attention": None},
+        "2026-09-24": {"filed": 24, "unfiled": 1, "need_attention": None},
+    }
+    assert second == first
+    assert connect.call_count == 1 and count.call_count == 2
+    imap.logout.assert_called_once()
+
+
+def test_api_summary_counts_refetched_after_mailbox_change(client):
+    with (
+        patch("app.open_imap", return_value=MagicMock()) as connect,
+        patch("app.get_all_labels", return_value=[]),
+        patch("app.count_day", return_value={"filed": 0, "unfiled": 2}),
+    ):
+        client.get("/api/summary/counts?dates=2026-09-25")
+        flask_app_module._invalidate_inbox_count()  # what sort/accept/resort/move call
+        client.get("/api/summary/counts?dates=2026-09-25")
+    assert connect.call_count == 2
+
+
+def test_api_summary_counts_include_need_attention_after_analysis(client, monkeypatch):
+    _run_inbox_job_sync(monkeypatch)
+    with (
+        patch("app.open_imap", return_value=MagicMock()),
+        patch("app.collect_day", return_value=_summary_day()),
+        patch("app.analyze_with_claude", side_effect=_fake_claude),
+    ):
+        _start_summary(client)
+        # The job primed the counts cache, so no IMAP connection is needed.
+        with patch("app.count_day") as count:
+            data = client.get("/api/summary/counts?dates=2026-09-25").get_json()
+    count.assert_not_called()
+    assert data["counts"]["2026-09-25"] == {"filed": 1, "unfiled": 3, "need_attention": 1}
+
+
+def test_api_summary_counts_missing_credentials(client, monkeypatch):
+    for key in ("IMAP_SERVER", "IMAP_USERNAME", "IMAP_PASSWORD"):
+        monkeypatch.delenv(key, raising=False)
+    resp = client.get("/api/summary/counts?dates=2026-09-25")
+    assert resp.status_code == 400
+    assert "not configured" in resp.get_json()["error"]

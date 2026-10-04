@@ -7,7 +7,7 @@ import sys
 import threading
 import time
 import uuid
-from datetime import date
+from datetime import date, timedelta
 from email.message import EmailMessage
 from email.utils import formatdate, make_msgid
 from io import BytesIO
@@ -20,10 +20,15 @@ import commonFunctions
 from emailSummary import (
     ANALYSIS_MODELS,
     DEFAULT_ANALYSIS_MODEL,
+    SummaryError,
     accept_filing,
     analysis_model,
+    analyze_senders,
     analyze_with_claude,
+    collect_day,
+    count_day,
     deduplicate_inbox_emails,
+    open_imap,
 )
 import resortEmail
 from resortEmail import resort, resort_max_messages
@@ -61,7 +66,6 @@ from commonFunctions import (
     set_credential,
     setup_logging,
     summarize_token_usage,
-    summary_files,
     uid_search_all,
     update_sender_rule,
     validate_email_address,
@@ -108,13 +112,12 @@ def _log_exception(exc):
 
 
 BASE_DIR = Path(__file__).parent
-# Persistent state (learned filing rules + generated summaries) lives in DATA_DIR.
+# Persistent state (learned filing rules, token-usage log) lives in DATA_DIR.
 # Defaults to the code directory so desktop/Electron/test runs are unchanged; set
 # MAILMATRIX_DATA_DIR to a mounted volume to relocate it (used by the container image).
 DATA_DIR = Path(os.environ.get("MAILMATRIX_DATA_DIR", BASE_DIR))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 RULES_PATH = DATA_DIR / "emailRules.json"
-SUMMARY_DIR = DATA_DIR / "emailSummary"
 ENV_PATH = BASE_DIR / ".env"
 _sort_lock = threading.Lock()
 # One resort at a time: two concurrent reconciles would race on the same
@@ -129,6 +132,7 @@ _CREDENTIAL_KEYS = {"IMAP_SERVER", "IMAP_PORT", "IMAP_USERNAME", "IMAP_PASSWORD"
 
 CLAUDE_BATCH_SIZE = 50
 _INBOX_JOB_MAX_AGE = 600  # seconds a finished job's state is kept around for polling
+# Background analysis jobs — both /inbox and /summary/<date> run through these.
 _inbox_jobs: dict = {}
 _inbox_jobs_lock = threading.Lock()
 
@@ -184,6 +188,9 @@ def _invalidate_inbox_count() -> None:
     with _inbox_count_lock:
         _inbox_count_cache["value"] = None
         _inbox_count_cache["at"] = 0.0
+    # Anything that moves mail in or out of INBOX changes the per-day summary
+    # counts too.
+    _invalidate_summary_counts()
 
 
 def _inbox_count() -> int:
@@ -234,7 +241,7 @@ def _save_rules(data: dict) -> None:
 def dashboard():
     rules = _load_rules()
     today = date.today()
-    stats = dashboard_stats(rules, SUMMARY_DIR, today)
+    stats = dashboard_stats(rules, today)
     # Same "optimizations" count the /cleanup page uses to decide empty-vs-not.
     optimization_count = len(find_domain_collapsible(rules)) + len(find_duplicate_addresses(rules))
 
@@ -242,7 +249,6 @@ def dashboard():
         "dashboard.html",
         label_count=stats["label_count"],
         rules_count=stats["rules_count"],
-        summary_count=stats["summary_count"],
         recent_days=stats["recent_days"],
         today=today.isoformat(),
         custom_default=stats["custom_default"],
@@ -250,20 +256,46 @@ def dashboard():
     )
 
 
+def _parse_day(value: str):
+    """A YYYY-MM-DD string as a date, or None if it isn't one."""
+    try:
+        return date.fromisoformat(value) if re.fullmatch(r"\d{4}-\d{2}-\d{2}", value or "") else None
+    except ValueError:
+        return None
+
+
+@app.route("/summary")
+@app.route("/summary/<day>")
+def summary_page(day: str = None):
+    """Live daily summary. The page is a shell; its data comes from a
+    background job (/api/summary/<date>/start) so it renders immediately."""
+    today = date.today()
+    target = today if day is None else _parse_day(day)
+    if target is None:
+        return "Not found — use /summary/YYYY-MM-DD", 404
+    return render_template(
+        "summary.html",
+        day=target.isoformat(),
+        heading=f"{target.strftime('%B')} {target.day}, {target.year}",
+        prev_day=(target - timedelta(days=1)).isoformat(),
+        next_day=(target + timedelta(days=1)).isoformat() if target < today else None,
+        today=today.isoformat(),
+        model_labels={model: info["label"] for model, info in ANALYSIS_MODELS.items()},
+    )
+
+
+# Summaries used to be saved files; keep old bookmarks working.
 @app.route("/summaries")
 def summaries():
-    files = summary_files(SUMMARY_DIR)
-    return render_template("summaries.html", files=files)
+    return redirect(url_for("summary_page"))
 
 
 @app.route("/summaries/<filename>")
-def view_summary(filename: str):
-    path = (SUMMARY_DIR / filename).resolve()
-    # M2: confirm the resolved path is actually inside SUMMARY_DIR
-    if not path.is_relative_to(SUMMARY_DIR.resolve()) or path.suffix != ".html" or not path.exists():
+def legacy_summary_file(filename: str):
+    m = re.fullmatch(r"email_summary_(\d{4}-\d{2}-\d{2})\.html", filename)
+    if not m or _parse_day(m.group(1)) is None:
         return "Not found", 404
-    # Serve the HTML file; Accept buttons POST to /accept on the app server
-    return send_file(path, mimetype="text/html")
+    return redirect(url_for("summary_page", day=m.group(1)))
 
 
 @app.route("/rules")
@@ -400,54 +432,6 @@ def api_resort():
         _invalidate_inbox_count()
         _invalidate_folders_cache()
     return jsonify(result)
-
-
-@app.route("/api/generate-summary", methods=["POST"])
-def api_generate_summary():
-    body = _json_body()
-    target_date = (body.get("date") or "").strip()
-    if target_date:
-        try:
-            date.fromisoformat(target_date)
-        except ValueError:
-            return jsonify({"ok": False, "error": f"Invalid date: {target_date}"}), 400
-
-    cmd = [sys.executable, str(BASE_DIR / "emailSummary.py"), "--no-serve"]
-    if target_date:
-        cmd.append(target_date)
-
-    log.info("Summary generation triggered for %s", target_date or "today")
-    t0 = time.monotonic()
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300, env=_child_env())
-    elapsed = time.monotonic() - t0
-
-    if result.returncode == 0:
-        resolved_date = target_date or date.today().isoformat()
-        filename = f"email_summary_{resolved_date}.html"
-        log.info("Summary generated in %.1fs: %s", elapsed, filename)
-        resp = {"ok": True, "filename": filename}
-        # Echo the refreshed sidecar meta so callers (e.g. the Summaries page
-        # per-card refresh) can update a card in place without a full reload.
-        for entry in summary_files(SUMMARY_DIR):
-            if entry.get("date") == resolved_date:
-                for key in ("processed", "need_attention", "unfiled", "filed", "generated_at"):
-                    if key in entry:
-                        resp[key] = entry[key]
-                break
-        return jsonify(resp)
-    log.error("Summary failed in %.1fs (exit=%d): %s", elapsed, result.returncode, result.stderr[-500:])
-    return jsonify({"ok": False, "error": result.stderr[-2000:]}), 500
-
-
-@app.route("/api/summaries/unfiled-dates")
-def api_summaries_unfiled_dates():
-    """Dates (newest first) whose summary still has unfiled emails.
-
-    Drives the Summaries page "Refresh unfiled" button, which regenerates each
-    of these reports sequentially.
-    """
-    dates = [entry["date"] for entry in summary_files(SUMMARY_DIR) if entry.get("unfiled")]
-    return jsonify({"dates": dates})
 
 
 @app.route("/accept", methods=["POST"])
@@ -624,26 +608,12 @@ def inbox():
     return render_template("inbox.html")
 
 
-def _reindexed(items: list, batch_start: int, batch_len: int) -> list:
-    """Offset Claude's 1-based per-batch indices to positions in the full
-    deduped sender list, dropping items whose index is missing or malformed
-    (Claude occasionally returns imperfect JSON) instead of failing the job.
-    """
-    out = []
-    for item in items:
-        idx = item.get("index") if isinstance(item, dict) else None
-        if not isinstance(idx, int) or isinstance(idx, bool) or not (1 <= idx <= batch_len):
-            log.warning("Dropping analysis item with bad index: %r", item)
-            continue
-        out.append({**item, "index": idx + batch_start})
-    return out
-
-
 def _analyze_inbox(progress_cb=None, cancel_event=None) -> dict:
-    """Fetch all current INBOX messages, then call Claude in batches of
-    CLAUDE_BATCH_SIZE unique senders at a time. progress_cb(phase, current, total)
-    is invoked during both the IMAP fetch phase and the Claude analysis phase;
-    cancel_event is checked between messages and between batches so a caller
+    """Fetch all current INBOX messages, then analyze them per sender through
+    analyze_senders (batches of CLAUDE_BATCH_SIZE, cached — see
+    emailSummary.ANALYSIS_CACHE). progress_cb(phase, current, total) is invoked
+    during both the IMAP fetch phase and the Claude analysis phase;
+    cancel_event is checked between chunks and between batches so a caller
     running this in a background thread can stop it early.
     """
     progress_cb = progress_cb or (lambda phase, current, total: None)
@@ -712,42 +682,30 @@ def _analyze_inbox(progress_cb=None, cancel_event=None) -> dict:
     if cancelled:
         return {"cancelled": True}
 
-    emails = deduplicate_inbox_emails(raw_emails)
-    total_senders = len(emails)
-    log.info("Deduplicated to %d unique senders; calling Claude in batches of %d",
-              total_senders, CLAUDE_BATCH_SIZE)
+    emails = [{k: v for k, v in em.items() if k != "msg_id"}
+              for em in deduplicate_inbox_emails(raw_emails)]
+    log.info("Deduplicated to %d unique senders", len(emails))
 
-    action_required = []
-    filing_suggestions = []
-    error = None
-    for batch_start in range(0, total_senders, CLAUDE_BATCH_SIZE):
-        if cancel_event.is_set():
-            cancelled = True
-            break
-        batch = emails[batch_start:batch_start + CLAUDE_BATCH_SIZE]
-        progress_cb("analyzing", batch_start, total_senders)
-        analysis = analyze_with_claude(batch, labels, caller="inbox-analyze")
-        if analysis.get("_error") and not error:
-            error = analysis["_error"]
-        # analyze_with_claude numbers emails 1..len(batch) local to this call;
-        # offset back to the sender's position in the full deduped list.
-        action_required.extend(_reindexed(analysis.get("action_required", []), batch_start, len(batch)))
-        filing_suggestions.extend(_reindexed(analysis.get("filing_suggestions", []), batch_start, len(batch)))
-        progress_cb("analyzing", batch_start + len(batch), total_senders)
-
-    if cancelled:
+    # analyze_fn is passed explicitly (resolved from this module at call time)
+    # so tests can patch app.analyze_with_claude.
+    analysis = analyze_senders(
+        emails, labels,
+        caller="inbox-analyze",
+        batch_size=CLAUDE_BATCH_SIZE,
+        analyze_fn=analyze_with_claude,
+        progress_cb=progress_cb,
+        cancel_event=cancel_event,
+    )
+    if analysis.get("cancelled"):
         return {"cancelled": True}
 
     return {
         "ok": True,
-        "emails": [
-            {k: v for k, v in em.items() if k != "msg_id"}
-            for em in emails
-        ],
+        "emails": emails,
         "labels": labels,
-        "action_required": action_required,
-        "filing_suggestions": filing_suggestions,
-        "error": error,
+        "action_required": analysis["action_required"],
+        "filing_suggestions": analysis["filing_suggestions"],
+        "error": analysis["error"],
     }
 
 
@@ -761,79 +719,242 @@ def _get_job(job_id: str):
     """Look up a job under the lock so a concurrent prune can't race the read.
 
     Inner job dicts need no locking: the worker thread is the only writer and
-    always *replaces* values (progress dicts, result) atomically. It also sets
-    "result" before "status", so a poller can never see status=done with
+    always *replaces* values (progress dicts, day, result) atomically. It also
+    sets "result" before "status", so a poller can never see status=done with
     result=None — keep that write order.
     """
     with _inbox_jobs_lock:
         return _inbox_jobs.get(job_id)
 
 
-def _run_inbox_job(job_id: str) -> None:
-    job = _get_job(job_id)
-    if job is None:  # pruned before the thread got scheduled — nothing to do
-        return
-
-    def progress_cb(phase, current, total):
-        job["progress"] = {"phase": phase, "current": current, "total": total}
-
-    try:
-        result = _analyze_inbox(progress_cb=progress_cb, cancel_event=job["cancel_event"])
-    except Exception as exc:
-        log.exception("Inbox analysis job %s failed", job_id)
-        job["status"] = "error"
-        job["result"] = {"ok": False, "error": str(exc)}
-        return
-
-    if result.get("cancelled"):
-        job["status"] = "cancelled"
-    elif not result.get("ok"):
-        job["status"] = "error"
-        job["result"] = result
-    else:
-        job["status"] = "done"
-        job["result"] = result
-
-
-def _start_job_thread(job_id: str) -> None:
-    threading.Thread(target=_run_inbox_job, args=(job_id,), daemon=True).start()
-
-
-@app.route("/api/inbox-analyze/start", methods=["POST"])
-def api_inbox_analyze_start():
+def _new_job(work, kind: str) -> str:
+    """Register a job; work(job) runs in the background and returns the result
+    dict ({"ok": True, ...}, {"ok": False, "error": ...} or {"cancelled": True})."""
     with _inbox_jobs_lock:
         _prune_inbox_jobs()
         job_id = uuid.uuid4().hex
         _inbox_jobs[job_id] = {
+            "kind": kind,
+            "work": work,
             "status": "running",
             "progress": {"phase": "fetching", "current": 0, "total": 0},
             "result": None,
             "cancel_event": threading.Event(),
             "created_at": time.time(),
         }
+    return job_id
+
+
+def _run_job(job_id: str) -> None:
+    job = _get_job(job_id)
+    if job is None:  # pruned before the thread got scheduled — nothing to do
+        return
+    try:
+        result = job["work"](job)
+    except Exception as exc:
+        log.exception("%s job %s failed", job["kind"], job_id)
+        job["result"] = {"ok": False, "error": str(exc)}
+        job["status"] = "error"
+        return
+
+    if result.get("cancelled"):
+        job["status"] = "cancelled"
+    elif not result.get("ok"):
+        job["result"] = result
+        job["status"] = "error"
+    else:
+        job["result"] = result
+        job["status"] = "done"
+
+
+def _start_job_thread(job_id: str) -> None:
+    threading.Thread(target=_run_job, args=(job_id,), daemon=True).start()
+
+
+def _job_progress_cb(job):
+    def progress_cb(phase, current, total):
+        job["progress"] = {"phase": phase, "current": current, "total": total}
+    return progress_cb
+
+
+def _job_of_kind(job_id: str, kind: str):
+    job = _get_job(job_id)
+    return job if job is not None and job["kind"] == kind else None
+
+
+def _job_status_response(job, extra=None):
+    body = {"status": job["status"], "progress": job["progress"], "result": job["result"]}
+    body.update(extra or {})
+    return jsonify(body)
+
+
+@app.route("/api/inbox-analyze/start", methods=["POST"])
+def api_inbox_analyze_start():
+    def work(job):
+        return _analyze_inbox(progress_cb=_job_progress_cb(job), cancel_event=job["cancel_event"])
+
+    job_id = _new_job(work, "inbox")
     _start_job_thread(job_id)
     return jsonify({"job_id": job_id})
 
 
 @app.route("/api/inbox-analyze/status/<job_id>")
 def api_inbox_analyze_status(job_id):
-    job = _get_job(job_id)
+    job = _job_of_kind(job_id, "inbox")
     if not job:
         return jsonify({"error": "Unknown job"}), 404
-    return jsonify({
-        "status": job["status"],
-        "progress": job["progress"],
-        "result": job["result"],
-    })
+    return _job_status_response(job)
 
 
 @app.route("/api/inbox-analyze/cancel/<job_id>", methods=["POST"])
 def api_inbox_analyze_cancel(job_id):
-    job = _get_job(job_id)
+    job = _job_of_kind(job_id, "inbox")
     if not job:
         return jsonify({"error": "Unknown job"}), 404
     job["cancel_event"].set()
     return jsonify({"ok": True})
+
+
+# ── Live daily summary ────────────────────────────────────────────────────────
+# Per-day counts (IMAP SEARCH only) are cached briefly because the dashboard
+# asks for a week at a time; _invalidate_inbox_count() clears them after any
+# move. The latest analysis per day supplies "need attention" without AI.
+
+_SUMMARY_COUNTS_TTL = 300.0
+_SUMMARY_COUNTS_MAX_DAYS = 31
+_summary_counts_cache: dict = {}   # "YYYY-MM-DD" -> (monotonic time, {"filed", "unfiled"})
+_day_analysis: dict = {}           # "YYYY-MM-DD" -> {"need_attention", "analyzed_at", "model"}
+_summary_state_lock = threading.Lock()
+
+
+def _invalidate_summary_counts() -> None:
+    with _summary_state_lock:
+        _summary_counts_cache.clear()
+
+
+def _summary_work(target: date, force: bool):
+    def work(job):
+        progress_cb = _job_progress_cb(job)
+        try:
+            imap = open_imap()
+        except SummaryError as exc:
+            return {"ok": False, "error": str(exc)}
+        except Exception as exc:
+            return {"ok": False, "error": f"IMAP connection failed: {exc}"}
+        try:
+            day = collect_day(imap, target)
+        finally:
+            try:
+                imap.logout()
+            except Exception:
+                pass
+        # Mailbox data is visible to pollers before the AI step finishes.
+        job["day"] = day
+        with _summary_state_lock:
+            _summary_counts_cache[day["date"]] = (
+                time.monotonic(), {"filed": day["counts"]["filed"], "unfiled": day["counts"]["unfiled"]})
+
+        analysis = analyze_senders(
+            day["inbox"], day["labels"],
+            force=force,
+            caller="summary",
+            batch_size=CLAUDE_BATCH_SIZE,
+            analyze_fn=analyze_with_claude,
+            progress_cb=progress_cb,
+            cancel_event=job["cancel_event"],
+        )
+        if analysis.get("cancelled"):
+            return {"cancelled": True}
+        if not analysis["error"]:
+            with _summary_state_lock:
+                _day_analysis[day["date"]] = {
+                    "need_attention": len(analysis["action_required"]),
+                    "analyzed_at": analysis["analyzed_at"],
+                    "model": analysis["model"],
+                }
+        return {"ok": True, "day": day, "analysis": analysis}
+    return work
+
+
+@app.route("/api/summary/<day>/start", methods=["POST"])
+def api_summary_start(day):
+    target = _parse_day(day)
+    if target is None:
+        return jsonify({"ok": False, "error": f"Invalid date: {day}"}), 400
+    force = bool(_json_body().get("force"))
+    job_id = _new_job(_summary_work(target, force), "summary")
+    _start_job_thread(job_id)
+    return jsonify({"ok": True, "job_id": job_id})
+
+
+@app.route("/api/summary/status/<job_id>")
+def api_summary_status(job_id):
+    job = _job_of_kind(job_id, "summary")
+    if not job:
+        return jsonify({"error": "Unknown job"}), 404
+    return _job_status_response(job, {"day": job.get("day")})
+
+
+@app.route("/api/summary/cancel/<job_id>", methods=["POST"])
+def api_summary_cancel(job_id):
+    job = _job_of_kind(job_id, "summary")
+    if not job:
+        return jsonify({"error": "Unknown job"}), 404
+    job["cancel_event"].set()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/summary/counts")
+def api_summary_counts():
+    """Per-day {filed, unfiled, need_attention} for ?dates=YYYY-MM-DD,...
+
+    need_attention is null until that day's summary has been analyzed.
+    """
+    raw = [d for d in (request.args.get("dates") or "").split(",") if d]
+    if not raw or len(raw) > _SUMMARY_COUNTS_MAX_DAYS:
+        return jsonify({"ok": False,
+                        "error": f"Pass 1-{_SUMMARY_COUNTS_MAX_DAYS} dates as ?dates=YYYY-MM-DD,..."}), 400
+    days = []
+    for d in raw:
+        parsed = _parse_day(d)
+        if parsed is None:
+            return jsonify({"ok": False, "error": f"Invalid date: {d}"}), 400
+        days.append(parsed)
+
+    now = time.monotonic()
+    counts = {}
+    with _summary_state_lock:
+        for d in days:
+            hit = _summary_counts_cache.get(d.isoformat())
+            if hit and now - hit[0] < _SUMMARY_COUNTS_TTL:
+                counts[d.isoformat()] = dict(hit[1])
+    missing = [d for d in days if d.isoformat() not in counts]
+
+    if missing:
+        try:
+            imap = open_imap()
+        except SummaryError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+        except Exception as exc:
+            return jsonify({"ok": False, "error": f"IMAP connection failed: {exc}"}), 502
+        try:
+            labels = get_all_labels(imap, "MailMatrixCategories")
+            for d in missing:
+                counts[d.isoformat()] = count_day(imap, labels, d)
+        finally:
+            try:
+                imap.logout()
+            except Exception:
+                pass
+        with _summary_state_lock:
+            for d in missing:
+                _summary_counts_cache[d.isoformat()] = (now, dict(counts[d.isoformat()]))
+
+    with _summary_state_lock:
+        for key, entry in counts.items():
+            analyzed = _day_analysis.get(key)
+            entry["need_attention"] = analyzed["need_attention"] if analyzed else None
+    return jsonify({"ok": True, "counts": counts})
 
 
 @app.route("/cleanup")

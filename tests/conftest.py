@@ -56,6 +56,16 @@ def _token_log(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _clear_analysis_cache():
+    """emailSummary.ANALYSIS_CACHE is process-wide; a sender cached by one test
+    would silently skip the (mocked) Claude call in the next."""
+    import emailSummary
+    emailSummary.ANALYSIS_CACHE.clear()
+    yield
+    emailSummary.ANALYSIS_CACHE.clear()
+
+
+@pytest.fixture(autouse=True)
 def _reset_analysis_model(monkeypatch):
     """set_credential mirrors values into os.environ, so a test that picks an
     analysis model would leak it into later tests. Registering the key with

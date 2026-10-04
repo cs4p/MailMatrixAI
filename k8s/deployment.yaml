@@ -24,7 +24,7 @@ spec:
         runAsNonRoot: true
         runAsUser: 1000
         # fsGroup makes the mounted volume group-owned by the app user so it
-        # can write emailRules.json / summaries.
+        # can write emailRules.json / the token-usage log.
         fsGroup: 1000
       containers:
         - name: mailmatrixai

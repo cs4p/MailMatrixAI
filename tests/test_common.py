@@ -25,7 +25,6 @@ from commonFunctions import (
     move_imap_messages,
     parse_headers,
     resolve_duplicate_address,
-    summary_files,
     update_sender_rule,
     validate_rules_document,
 )
@@ -487,115 +486,26 @@ def test_move_imap_messages_no_messages_found(mock_imap):
     mock_imap.expunge.assert_not_called()
 
 
-# ── summary_files ──────────────────────────────────────────────────────────────
-
-def test_summary_files_empty_dir_missing(tmp_path):
-    assert summary_files(tmp_path / "does-not-exist") == []
-
-
-def test_summary_files_parses_date_and_label(tmp_path):
-    (tmp_path / "email_summary_2026-07-16.html").write_text("<html></html>")
-    (tmp_path / "email_summary_2026-07-01.html").write_text("<html></html>")
-    (tmp_path / "not_a_summary.html").write_text("<html></html>")
-
-    files = summary_files(tmp_path)
-
-    assert [f["date"] for f in files] == ["2026-07-16", "2026-07-01"]  # newest first
-    assert files[0]["filename"] == "email_summary_2026-07-16.html"
-    assert files[0]["label"] == "July 16, 2026"
-
-
-def test_summary_files_falls_back_to_raw_date_part_on_parse_failure(tmp_path):
-    (tmp_path / "email_summary_not-a-date.html").write_text("<html></html>")
-    files = summary_files(tmp_path)
-    assert files[0]["label"] == "not-a-date"
-
-
-def test_summary_files_reads_stats_from_json_sidecar(tmp_path):
-    (tmp_path / "email_summary_2026-07-16.html").write_text("<html></html>")
-    (tmp_path / "email_summary_2026-07-16.json").write_text(json.dumps({
-        "processed": 42, "need_attention": 3, "unfiled": 5, "filed": 37,
-        "generated_at": "2026-07-16T09:05:00",
-    }))
-    files = summary_files(tmp_path)
-    f = files[0]
-    assert f["processed"] == 42
-    assert f["need_attention"] == 3
-    assert f["unfiled"] == 5
-    assert f["filed"] == 37
-    assert f["generated_at"] == "Jul 16, 2026 at 09:05 AM"
-
-
-def test_summary_files_no_stats_without_sidecar(tmp_path):
-    (tmp_path / "email_summary_2026-07-16.html").write_text("<html></html>")
-    files = summary_files(tmp_path)
-    assert "processed" not in files[0]
-    assert "generated_at" not in files[0]
-
-
-def test_summary_files_tolerates_malformed_sidecar(tmp_path):
-    (tmp_path / "email_summary_2026-07-16.html").write_text("<html></html>")
-    (tmp_path / "email_summary_2026-07-16.json").write_text("{not valid json")
-    files = summary_files(tmp_path)
-    # Doesn't blow up; just no stats surfaced for this entry
-    assert files[0]["filename"] == "email_summary_2026-07-16.html"
-    assert "processed" not in files[0]
-
-
 # ── dashboard_stats ────────────────────────────────────────────────────────────
 
-def test_dashboard_stats_counts_labels_and_rules(rules_data, tmp_path):
-    stats = dashboard_stats(rules_data, tmp_path, date(2026, 7, 16))
+def test_dashboard_stats_counts_labels_and_rules(rules_data):
+    stats = dashboard_stats(rules_data, date(2026, 7, 16))
     assert stats["label_count"] == 2
     assert stats["rules_count"] == 4  # 2 Work senders + 1 Shopping sender + 1 Shopping domain
-    assert stats["summary_count"] == 0
+    assert "summary_count" not in stats  # no saved summaries any more
 
 
-def test_dashboard_stats_recent_days_labels_today_and_yesterday(tmp_path):
-    stats = dashboard_stats({"labels": []}, tmp_path, date(2026, 7, 16))
+def test_dashboard_stats_recent_days_labels_today_and_yesterday():
+    stats = dashboard_stats({"labels": []}, date(2026, 7, 16))
     days = stats["recent_days"]
     assert len(days) == 7
-    assert days[0] == {
-        "date": "2026-07-16", "label": "Today", "has_summary": False, "filename": None,
-        "processed": None, "need_attention": None, "unfiled": None, "generated_at": None,
-    }
-    assert days[1]["label"] == "Yesterday"
-    assert days[1]["date"] == "2026-07-15"
+    assert days[0] == {"date": "2026-07-16", "label": "Today"}
+    assert days[1] == {"date": "2026-07-15", "label": "Yesterday"}
+    assert days[2]["label"] == "Tue, Jul 14"
 
 
-def test_dashboard_stats_marks_has_summary_and_filename(tmp_path):
-    (tmp_path / "email_summary_2026-07-16.html").write_text("<html></html>")
-    stats = dashboard_stats({"labels": []}, tmp_path, date(2026, 7, 16))
-    assert stats["summary_count"] == 1
-    assert stats["recent_days"][0]["has_summary"] is True
-    assert stats["recent_days"][0]["filename"] == "email_summary_2026-07-16.html"
-
-
-def test_dashboard_stats_recent_days_carries_stats_from_sidecar(tmp_path):
-    (tmp_path / "email_summary_2026-07-16.html").write_text("<html></html>")
-    (tmp_path / "email_summary_2026-07-16.json").write_text(json.dumps({
-        "processed": 42, "need_attention": 3, "unfiled": 5, "filed": 37,
-        "generated_at": "2026-07-16T09:05:00",
-    }))
-    stats = dashboard_stats({"labels": []}, tmp_path, date(2026, 7, 16))
-    today = stats["recent_days"][0]
-    assert today["processed"] == 42
-    assert today["need_attention"] == 3
-    assert today["unfiled"] == 5
-    assert today["generated_at"] == "Jul 16, 2026 at 09:05 AM"
-
-
-def test_dashboard_stats_recent_days_without_summary_have_none_stats(tmp_path):
-    stats = dashboard_stats({"labels": []}, tmp_path, date(2026, 7, 16))
-    today = stats["recent_days"][0]
-    assert today["processed"] is None
-    assert today["need_attention"] is None
-    assert today["unfiled"] is None
-    assert today["generated_at"] is None
-
-
-def test_dashboard_stats_custom_default_is_one_day_before_oldest_recent_day(tmp_path):
-    stats = dashboard_stats({"labels": []}, tmp_path, date(2026, 7, 16))
+def test_dashboard_stats_custom_default_is_one_day_before_oldest_recent_day():
+    stats = dashboard_stats({"labels": []}, date(2026, 7, 16))
     oldest = stats["recent_days"][-1]["date"]
     assert oldest == "2026-07-10"
     assert stats["custom_default"] == "2026-07-09"

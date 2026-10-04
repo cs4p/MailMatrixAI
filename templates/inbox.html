@@ -176,16 +176,10 @@
   }
 
   function renderActionSection(items) {
-    const cards = items.map(item => `
-      <div class="inbox-card action-card">
-        <div class="inbox-subject">${esc(item.subject || '(no subject)')}</div>
-        <div class="inbox-meta">From: ${esc(item.from || '')}</div>
-        <div class="action-reason">${esc(item.reason || '')}</div>
-      </div>`).join('');
     return `
       <div class="card inbox-section">
         <h2 class="inbox-section-title">Need Attention</h2>
-        ${cards}
+        ${renderActionCards(items)}
       </div>`;
   }
 
@@ -197,38 +191,7 @@
       </div>`;
     }
 
-    const cards = emails.map((em, i) => {
-      const idx = i + 1;
-      const sug = suggestions[idx];
-      const count = (em.count || 1) > 1 ? `<span class="count-badge">${em.count}×</span>` : '';
-      const preview = em.body_snippet
-        ? `<div class="inbox-preview">${esc(em.body_snippet.slice(0, 200))}</div>`
-        : '';
-
-      let sugHtml = '';
-      if (sug && sug.suggested_label) {
-        const allOpts = [...labels];
-        if (!allOpts.includes(sug.suggested_label)) allOpts.unshift(sug.suggested_label);
-        const opts = allOpts.map(lbl =>
-          `<option value="${escAttr(lbl)}"${lbl === sug.suggested_label ? ' selected' : ''}>${esc(lbl.replace('MailMatrixCategories/', ''))}</option>`
-        ).join('');
-        const newBadge = sug.is_new_label ? ' <span class="new-badge">new</span>' : '';
-        const reason = sug.reason ? `<span class="suggestion-reason">${esc(sug.reason)}</span>` : '';
-        sugHtml = `<div class="suggestion">
-          <select class="label-select">${opts}</select>${newBadge}
-          ${reason}
-          <button class="accept-btn" data-from="${escAttr(em.from_addr)}" onclick="handleAccept(this)">Accept</button>
-        </div>`;
-      }
-
-      return `<div class="inbox-card" id="inbox-card-${idx}">
-        <div class="inbox-subject">${esc(em.subject || '(no subject)')} ${count}</div>
-        <div class="inbox-meta">From: ${esc(em.from_display || em.from_addr)}</div>
-        <div class="inbox-meta">Date: ${esc(em.date || '')}</div>
-        ${preview}
-        ${sugHtml}
-      </div>`;
-    }).join('');
+    const cards = emails.map((em, i) => renderSenderCard(em, i + 1, suggestions[i + 1], labels)).join('');
 
     return `
       <div class="card inbox-section">
