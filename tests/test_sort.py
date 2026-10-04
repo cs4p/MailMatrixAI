@@ -155,6 +155,19 @@ def test_sort_inbox_matches_by_domain_rule(mock_imap):
     mock_imap.store.assert_called_once()
 
 
+def test_sort_inbox_matches_folded_from_header(mock_imap):
+    # A long display name folds the <address> onto a continuation line.
+    raw = (b"From: Montgomery County Public Schools via ParentSquare\r\n"
+           b"\t<donotreply+4d37899f@parentsquare.com>\r\n\r\n")
+    mock_imap.search.return_value = ("OK", [b"1"])
+    mock_imap.fetch.return_value = ("OK", [(b"1 (BODY[HEADER.FIELDS (FROM)] {99})", raw), b")"])
+
+    sort_inbox(mock_imap, {}, {"parentsquare.com": ["MailMatrixCategories/School"]})
+
+    mock_imap.copy.assert_called_once_with(b"1", '"MailMatrixCategories/School"')
+    mock_imap.store.assert_called_once()
+
+
 def test_sort_inbox_aborts_on_select_failure(mock_imap):
     mock_imap.select.return_value = ("NO", [b"Mailbox not found"])
 
