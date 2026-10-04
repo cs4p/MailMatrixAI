@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Changelog — MailMatrix AI{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Changelog</h1>
+  <p class="page-subtitle">{% if app_version %}Running v{{ app_version }}{% else %}Release history{% endif %}</p>
+</div>
+
+{% for r in releases %}
+<div class="card changelog-release" id="v{{ r.version }}">
+  <div class="changelog-head">
+    <h2>v{{ r.version }}</h2>
+    {% if r.date %}<span class="changelog-date">{{ r.date }}</span>{% endif %}
+    {% if r.version == app_version %}<span class="changelog-bump changelog-current">current</span>
+    {% elif r.bump in ('major', 'minor') %}<span class="changelog-bump">{{ r.bump }}</span>{% endif %}
+  </div>
+  {% for s in r.sections %}
+  <div class="changelog-section">
+    {% if s.title %}<h3>{{ s.title }}</h3>{% endif %}
+    <ul>
+      {% for item in s['items'] %}<li>{{ item }}</li>{% endfor %}
+    </ul>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<div class="card"><p class="page-subtitle">No release history available.</p></div>
+{% endfor %}
+{% endblock %}

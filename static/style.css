@@ -58,6 +58,33 @@ a:hover { text-decoration: underline; }
   text-decoration: none;
 }
 
+.nav-brand { display: flex; align-items: baseline; gap: .5rem; }
+.nav-version {
+  font-size: .72rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+  padding: .1rem .4rem;
+  border-radius: 6px;
+  text-decoration: none;
+  font-variant-numeric: tabular-nums;
+}
+.nav-version:hover, .nav-version.active { background: rgba(0,0,0,.05); color: var(--text); text-decoration: none; }
+
+/* ── Changelog ──────────────────────────────────────────────────────────── */
+.changelog-release { margin-bottom: 1rem; }
+.changelog-head { display: flex; align-items: baseline; gap: .6rem; flex-wrap: wrap; }
+.changelog-head h2 { font-size: 1.1rem; margin: 0; }
+.changelog-date { color: var(--text-secondary); font-size: .85rem; }
+.changelog-bump {
+  font-size: .7rem; text-transform: uppercase; letter-spacing: .04em;
+  color: var(--text-secondary); border: 1px solid var(--border);
+  border-radius: 6px; padding: 0 .35rem;
+}
+.changelog-current { color: var(--green); border-color: var(--green); }
+.changelog-section h3 { font-size: .85rem; color: var(--text-secondary); margin: .8rem 0 .3rem; }
+.changelog-section ul { margin: 0; padding-left: 1.2rem; }
+.changelog-section li { margin: .15rem 0; overflow-wrap: anywhere; }
+
 .nav-logo-ai {
   color: var(--blue);
 }

@@ -119,6 +119,7 @@ DATA_DIR = Path(os.environ.get("MAILMATRIX_DATA_DIR", BASE_DIR))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 RULES_PATH = DATA_DIR / "emailRules.json"
 ENV_PATH = BASE_DIR / ".env"
+CHANGELOG_PATH = BASE_DIR / "changelog.json"
 _sort_lock = threading.Lock()
 # One resort at a time: two concurrent reconciles would race on the same
 # COPY/EXPUNGE work and could double-file a message.
@@ -162,6 +163,54 @@ _migrate_env_to_keychain()
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _read_app_version() -> str:
+    """Version from pyproject.toml (the file version-bump.yml bumps)."""
+    try:
+        m = re.search(r'^version = "([^"]+)"', (BASE_DIR / "pyproject.toml").read_text(), re.M)
+    except OSError:
+        return ""
+    return m.group(1) if m else ""
+
+
+APP_VERSION = _read_app_version()
+
+
+@app.context_processor
+def _inject_app_version():
+    return {"app_version": APP_VERSION}
+
+
+def _parse_release_summary(summary: str) -> list:
+    """Split a changelog summary ("### Heading" + "- item" lines) into
+    [{"title", "items"}]. Plain data only — the template escapes it."""
+    sections: list = []
+    for line in summary.splitlines():
+        line = line.strip()
+        if line.startswith("#"):
+            sections.append({"title": line.lstrip("#").strip(), "items": []})
+        elif line.startswith(("- ", "* ")):
+            if not sections:
+                sections.append({"title": "", "items": []})
+            sections[-1]["items"].append(line[2:].replace("**", "").strip())
+    return sections
+
+
+def _load_changelog() -> list:
+    try:
+        data = json.loads(CHANGELOG_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    releases = data.get("releases") if isinstance(data, dict) else None
+    if not isinstance(releases, list):
+        return []
+    return [{
+        "version": str(r.get("version", "")),
+        "date": str(r.get("date", "")),
+        "bump": str(r.get("bump", "")),
+        "sections": _parse_release_summary(str(r.get("summary", ""))),
+    } for r in releases if isinstance(r, dict)]
+
 
 def _load_rules() -> dict:
     return load_rules_file(RULES_PATH)
@@ -329,6 +378,11 @@ def config():
                            resort_default=resortEmail.DEFAULT_MAX_MESSAGES,
                            analysis_models=ANALYSIS_MODELS,
                            default_analysis_model=DEFAULT_ANALYSIS_MODEL)
+
+
+@app.route("/changelog")
+def changelog():
+    return render_template("changelog.html", releases=_load_changelog())
 
 
 # ── API ───────────────────────────────────────────────────────────────────────

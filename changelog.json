@@ -1,0 +1,1690 @@
+{
+  "schema_version": 1,
+  "project": "MailMatrixAI",
+  "releases": [
+    {
+      "version": "0.4.110",
+      "date": "2026-10-04",
+      "bump": "patch",
+      "previous_version": "0.4.109",
+      "summary": "### Other changes\n- Bump anyio from 4.14.1 to 4.14.2",
+      "commits": [
+        {
+          "sha": "e62081e",
+          "subject": "Bump anyio from 4.14.1 to 4.14.2"
+        }
+      ]
+    },
+    {
+      "version": "0.4.109",
+      "date": "2026-10-04",
+      "bump": "patch",
+      "previous_version": "0.4.108",
+      "summary": "### Other changes\n- Bump fast-uri from 3.1.5 to 3.1.8 in /electron",
+      "commits": [
+        {
+          "sha": "c8c30f7",
+          "subject": "Bump fast-uri from 3.1.5 to 3.1.8 in /electron"
+        }
+      ]
+    },
+    {
+      "version": "0.4.108",
+      "date": "2026-10-04",
+      "bump": "patch",
+      "previous_version": "0.4.107",
+      "summary": "### Other changes\n- Bump brace-expansion from 1.1.18 to 1.1.21 in /electron",
+      "commits": [
+        {
+          "sha": "0de8ad9",
+          "subject": "Bump brace-expansion from 1.1.18 to 1.1.21 in /electron"
+        }
+      ]
+    },
+    {
+      "version": "0.4.107",
+      "date": "2026-10-04",
+      "bump": "patch",
+      "previous_version": "0.4.106",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.105\n- Bump undici in /electron",
+      "commits": [
+        {
+          "sha": "5d465f5",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.105"
+        },
+        {
+          "sha": "032e9c5",
+          "subject": "Bump undici in /electron"
+        }
+      ]
+    },
+    {
+      "version": "0.4.106",
+      "date": "2026-10-04",
+      "bump": "patch",
+      "previous_version": "0.4.105",
+      "summary": "### Fixes\n- Fix sortEmail missing senders whose From header is folded",
+      "commits": [
+        {
+          "sha": "2b98682",
+          "subject": "Fix sortEmail missing senders whose From header is folded"
+        }
+      ]
+    },
+    {
+      "version": "0.4.105",
+      "date": "2026-10-04",
+      "bump": "patch",
+      "previous_version": "0.4.104",
+      "summary": "### Other changes\n- Bump @xmldom/xmldom from 0.8.13 to 0.8.15 in /electron",
+      "commits": [
+        {
+          "sha": "7178b2a",
+          "subject": "Bump @xmldom/xmldom from 0.8.13 to 0.8.15 in /electron"
+        }
+      ]
+    },
+    {
+      "version": "0.4.104",
+      "date": "2026-10-04",
+      "bump": "patch",
+      "previous_version": "0.4.103",
+      "summary": "### Features\n- Replace saved summary files with a live daily summary\n\n### Other changes\n- Update dependency electron to v44.5.1 (#150)\n- Update dependency electron to v44.5.0 (#148)\n- Update dependency electron-builder to v26.17.0 (#146)\n- Auto-merge non-major updates after 72h\n- Update mailmatrixai image to v0.4.103 (#143)",
+      "commits": [
+        {
+          "sha": "a7d9901",
+          "subject": "chore(deps): update dependency electron to v44.5.1 [skip version] (#150)"
+        },
+        {
+          "sha": "68420d7",
+          "subject": "chore(deps): update dependency electron to v44.5.0 [skip version] (#148)"
+        },
+        {
+          "sha": "f5a86ec",
+          "subject": "chore(deps): update dependency electron-builder to v26.17.0 [skip version] (#146)"
+        },
+        {
+          "sha": "69f6e43",
+          "subject": "Replace saved summary files with a live daily summary"
+        },
+        {
+          "sha": "fcb8a5e",
+          "subject": "Renovate: auto-merge non-major updates after 72h"
+        },
+        {
+          "sha": "d34b25b",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.103 (#143)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.103",
+      "date": "2026-09-26",
+      "bump": "patch",
+      "previous_version": "0.4.102",
+      "summary": "### Fixes\n- Stop Renovate pin bumps from cutting releases; document real deploy path\n\n### Other changes\n- Update mailmatrixai image to v0.4.102\n- Update dependency electron-builder to v26.16.1\n- Update dependency electron to v44.4.5\n- Update docker/setup-buildx-action action to v4",
+      "commits": [
+        {
+          "sha": "2d19f82",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.102"
+        },
+        {
+          "sha": "d8a7486",
+          "subject": "Stop Renovate pin bumps from cutting releases; document real deploy path"
+        },
+        {
+          "sha": "4ef9936",
+          "subject": "chore(deps): update dependency electron-builder to v26.16.1"
+        },
+        {
+          "sha": "21c9270",
+          "subject": "chore(deps): update dependency electron to v44.4.5"
+        },
+        {
+          "sha": "d706b7b",
+          "subject": "chore(deps): update docker/setup-buildx-action action to v4"
+        },
+        {
+          "sha": "2b140ba",
+          "subject": "Update docker/setup-buildx-action action to v4"
+        }
+      ]
+    },
+    {
+      "version": "0.4.102",
+      "date": "2026-09-26",
+      "bump": "patch",
+      "previous_version": "0.4.101",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.101 (#140)",
+      "commits": [
+        {
+          "sha": "496129a",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.101 (#140)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.101",
+      "date": "2026-09-26",
+      "bump": "patch",
+      "previous_version": "0.4.100",
+      "summary": "### Features\n- Default inbox analysis to a lower-cost model\n- Add token-usage log for Claude analysis calls\n\n### Other changes\n- Sync electron lockfile version with package.json",
+      "commits": [
+        {
+          "sha": "9880751",
+          "subject": "Sync electron lockfile version with package.json [skip version]"
+        },
+        {
+          "sha": "a484f98",
+          "subject": "Default inbox analysis to a lower-cost model"
+        },
+        {
+          "sha": "caf9462",
+          "subject": "Add token-usage log for Claude analysis calls"
+        }
+      ]
+    },
+    {
+      "version": "0.4.100",
+      "date": "2026-09-26",
+      "bump": "patch",
+      "previous_version": "0.4.99",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.99 (#138)",
+      "commits": [
+        {
+          "sha": "190fc2b",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.99 (#138)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.99",
+      "date": "2026-09-26",
+      "bump": "patch",
+      "previous_version": "0.4.98",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.98 (#136)",
+      "commits": [
+        {
+          "sha": "a8df9d8",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.98 (#136)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.98",
+      "date": "2026-09-25",
+      "bump": "patch",
+      "previous_version": "0.4.97",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.97 (#135)",
+      "commits": [
+        {
+          "sha": "c982d29",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.97 (#135)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.97",
+      "date": "2026-09-25",
+      "bump": "patch",
+      "previous_version": "0.4.96",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.96 (#134)",
+      "commits": [
+        {
+          "sha": "819694a",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.96 (#134)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.96",
+      "date": "2026-09-24",
+      "bump": "patch",
+      "previous_version": "0.4.95",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.95 (#133)",
+      "commits": [
+        {
+          "sha": "0b37a99",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.95 (#133)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.95",
+      "date": "2026-09-24",
+      "bump": "patch",
+      "previous_version": "0.4.94",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.94 (#132)",
+      "commits": [
+        {
+          "sha": "a566796",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.94 (#132)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.94",
+      "date": "2026-09-23",
+      "bump": "patch",
+      "previous_version": "0.4.93",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.93 (#131)",
+      "commits": [
+        {
+          "sha": "e1ef3cf",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.93 (#131)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.93",
+      "date": "2026-09-22",
+      "bump": "patch",
+      "previous_version": "0.4.92",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.92 (#130)",
+      "commits": [
+        {
+          "sha": "3f2dcf1",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.92 (#130)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.92",
+      "date": "2026-09-22",
+      "bump": "patch",
+      "previous_version": "0.4.91",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.91 (#129)",
+      "commits": [
+        {
+          "sha": "b45c208",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.91 (#129)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.91",
+      "date": "2026-09-21",
+      "bump": "patch",
+      "previous_version": "0.4.90",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.90 (#128)",
+      "commits": [
+        {
+          "sha": "86a1848",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.90 (#128)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.90",
+      "date": "2026-09-21",
+      "bump": "patch",
+      "previous_version": "0.4.89",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.89 (#127)",
+      "commits": [
+        {
+          "sha": "2c5be68",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.89 (#127)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.89",
+      "date": "2026-09-21",
+      "bump": "patch",
+      "previous_version": "0.4.88",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.88 (#126)",
+      "commits": [
+        {
+          "sha": "d53362a",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.88 (#126)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.88",
+      "date": "2026-09-21",
+      "bump": "patch",
+      "previous_version": "0.4.87",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.87 (#125)",
+      "commits": [
+        {
+          "sha": "1cf1310",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.87 (#125)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.87",
+      "date": "2026-09-20",
+      "bump": "patch",
+      "previous_version": "0.4.86",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.86 (#124)",
+      "commits": [
+        {
+          "sha": "de44ef7",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.86 (#124)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.86",
+      "date": "2026-09-20",
+      "bump": "patch",
+      "previous_version": "0.4.85",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.85 (#123)",
+      "commits": [
+        {
+          "sha": "6848644",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.85 (#123)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.85",
+      "date": "2026-09-20",
+      "bump": "patch",
+      "previous_version": "0.4.84",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.84 (#122)",
+      "commits": [
+        {
+          "sha": "44f745f",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.84 (#122)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.84",
+      "date": "2026-09-20",
+      "bump": "patch",
+      "previous_version": "0.4.83",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.83 (#121)",
+      "commits": [
+        {
+          "sha": "f4099af",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.83 (#121)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.83",
+      "date": "2026-09-19",
+      "bump": "patch",
+      "previous_version": "0.4.82",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.82 (#120)",
+      "commits": [
+        {
+          "sha": "2ecd360",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.82 (#120)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.82",
+      "date": "2026-09-19",
+      "bump": "patch",
+      "previous_version": "0.4.81",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.81 (#119)",
+      "commits": [
+        {
+          "sha": "8ba6530",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.81 (#119)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.81",
+      "date": "2026-09-19",
+      "bump": "patch",
+      "previous_version": "0.4.80",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.80 (#118)",
+      "commits": [
+        {
+          "sha": "0ac5276",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.80 (#118)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.80",
+      "date": "2026-09-18",
+      "bump": "patch",
+      "previous_version": "0.4.79",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.79 (#116)",
+      "commits": [
+        {
+          "sha": "6b9e7cb",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.79 (#116)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.79",
+      "date": "2026-09-18",
+      "bump": "patch",
+      "previous_version": "0.4.78",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.78 (#115)",
+      "commits": [
+        {
+          "sha": "c1f381b",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.78 (#115)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.78",
+      "date": "2026-09-17",
+      "bump": "patch",
+      "previous_version": "0.4.77",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.77 (#114)",
+      "commits": [
+        {
+          "sha": "8fae433",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.77 (#114)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.77",
+      "date": "2026-09-17",
+      "bump": "patch",
+      "previous_version": "0.4.76",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.76 (#113)",
+      "commits": [
+        {
+          "sha": "d4aefa4",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.76 (#113)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.76",
+      "date": "2026-09-16",
+      "bump": "patch",
+      "previous_version": "0.4.75",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.75 (#112)",
+      "commits": [
+        {
+          "sha": "08d4aab",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.75 (#112)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.75",
+      "date": "2026-09-16",
+      "bump": "patch",
+      "previous_version": "0.4.74",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.74 (#111)",
+      "commits": [
+        {
+          "sha": "7f56bc9",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.74 (#111)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.74",
+      "date": "2026-09-16",
+      "bump": "patch",
+      "previous_version": "0.4.73",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.73 (#110)",
+      "commits": [
+        {
+          "sha": "6882e18",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.73 (#110)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.73",
+      "date": "2026-09-16",
+      "bump": "patch",
+      "previous_version": "0.4.72",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.72 (#109)",
+      "commits": [
+        {
+          "sha": "4913d25",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.72 (#109)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.72",
+      "date": "2026-09-16",
+      "bump": "patch",
+      "previous_version": "0.4.71",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.71 (#108)",
+      "commits": [
+        {
+          "sha": "c713d75",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.71 (#108)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.71",
+      "date": "2026-09-15",
+      "bump": "patch",
+      "previous_version": "0.4.70",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.70 (#107)",
+      "commits": [
+        {
+          "sha": "5459cff",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.70 (#107)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.70",
+      "date": "2026-09-15",
+      "bump": "patch",
+      "previous_version": "0.4.69",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.69 (#106)",
+      "commits": [
+        {
+          "sha": "22219ae",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.69 (#106)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.69",
+      "date": "2026-09-15",
+      "bump": "patch",
+      "previous_version": "0.4.68",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.68 (#105)",
+      "commits": [
+        {
+          "sha": "30b1921",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.68 (#105)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.68",
+      "date": "2026-09-14",
+      "bump": "patch",
+      "previous_version": "0.4.67",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.67 (#104)",
+      "commits": [
+        {
+          "sha": "f9df445",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.67 (#104)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.67",
+      "date": "2026-09-14",
+      "bump": "patch",
+      "previous_version": "0.4.66",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.66 (#103)",
+      "commits": [
+        {
+          "sha": "f7e256c",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.66 (#103)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.66",
+      "date": "2026-09-14",
+      "bump": "patch",
+      "previous_version": "0.4.65",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.65 (#102)",
+      "commits": [
+        {
+          "sha": "064ba15",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.65 (#102)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.65",
+      "date": "2026-09-14",
+      "bump": "patch",
+      "previous_version": "0.4.64",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.64 (#101)",
+      "commits": [
+        {
+          "sha": "47fb429",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.64 (#101)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.64",
+      "date": "2026-09-14",
+      "bump": "patch",
+      "previous_version": "0.4.63",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.63 (#100)",
+      "commits": [
+        {
+          "sha": "0fd4751",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.63 (#100)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.63",
+      "date": "2026-09-14",
+      "bump": "patch",
+      "previous_version": "0.4.62",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.62 (#99)",
+      "commits": [
+        {
+          "sha": "73e28b8b",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.62 (#99)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.62",
+      "date": "2026-09-13",
+      "bump": "patch",
+      "previous_version": "0.4.61",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.61 (#98)",
+      "commits": [
+        {
+          "sha": "d43ce08",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.61 (#98)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.61",
+      "date": "2026-09-13",
+      "bump": "patch",
+      "previous_version": "0.4.60",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.60 (#97)",
+      "commits": [
+        {
+          "sha": "65ccb8f",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.60 (#97)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.60",
+      "date": "2026-09-13",
+      "bump": "patch",
+      "previous_version": "0.4.59",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.59 (#96)",
+      "commits": [
+        {
+          "sha": "cc27907",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.59 (#96)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.59",
+      "date": "2026-09-13",
+      "bump": "patch",
+      "previous_version": "0.4.58",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.58 (#95)",
+      "commits": [
+        {
+          "sha": "c2796dd",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.58 (#95)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.58",
+      "date": "2026-09-13",
+      "bump": "patch",
+      "previous_version": "0.4.57",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.57 (#94)",
+      "commits": [
+        {
+          "sha": "b940220",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.57 (#94)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.57",
+      "date": "2026-09-13",
+      "bump": "patch",
+      "previous_version": "0.4.56",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.56 (#93)",
+      "commits": [
+        {
+          "sha": "8c79b72",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.56 (#93)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.56",
+      "date": "2026-09-12",
+      "bump": "patch",
+      "previous_version": "0.4.55",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.55 (#92)",
+      "commits": [
+        {
+          "sha": "b5854b1",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.55 (#92)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.55",
+      "date": "2026-09-12",
+      "bump": "patch",
+      "previous_version": "0.4.54",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.54 (#91)",
+      "commits": [
+        {
+          "sha": "ed9869f",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.54 (#91)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.54",
+      "date": "2026-09-12",
+      "bump": "patch",
+      "previous_version": "0.4.53",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.53 (#90)",
+      "commits": [
+        {
+          "sha": "c9fc617",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.53 (#90)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.53",
+      "date": "2026-09-11",
+      "bump": "patch",
+      "previous_version": "0.4.52",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.52 (#89)",
+      "commits": [
+        {
+          "sha": "1666ee8",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.52 (#89)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.52",
+      "date": "2026-09-11",
+      "bump": "patch",
+      "previous_version": "0.4.51",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.51 (#88)",
+      "commits": [
+        {
+          "sha": "acca12a",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.51 (#88)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.51",
+      "date": "2026-09-11",
+      "bump": "patch",
+      "previous_version": "0.4.50",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.50 (#87)",
+      "commits": [
+        {
+          "sha": "1c9d4fa",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.50 (#87)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.50",
+      "date": "2026-09-11",
+      "bump": "patch",
+      "previous_version": "0.4.49",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.49 (#86)",
+      "commits": [
+        {
+          "sha": "1d656c2",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.49 (#86)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.49",
+      "date": "2026-09-11",
+      "bump": "patch",
+      "previous_version": "0.4.48",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.48 (#85)",
+      "commits": [
+        {
+          "sha": "0d43ded",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.48 (#85)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.48",
+      "date": "2026-09-10",
+      "bump": "patch",
+      "previous_version": "0.4.47",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.47 (#84)",
+      "commits": [
+        {
+          "sha": "d21aeaa",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.47 (#84)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.47",
+      "date": "2026-09-10",
+      "bump": "patch",
+      "previous_version": "0.4.46",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.46 (#83)",
+      "commits": [
+        {
+          "sha": "38c7b26",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.46 (#83)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.46",
+      "date": "2026-09-10",
+      "bump": "patch",
+      "previous_version": "0.4.45",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.45 (#82)",
+      "commits": [
+        {
+          "sha": "80b6456",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.45 (#82)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.45",
+      "date": "2026-09-09",
+      "bump": "patch",
+      "previous_version": "0.4.44",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.44 (#81)",
+      "commits": [
+        {
+          "sha": "e713ca9",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.44 (#81)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.44",
+      "date": "2026-09-09",
+      "bump": "patch",
+      "previous_version": "0.4.43",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.43 (#80)",
+      "commits": [
+        {
+          "sha": "3c13e8b",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.43 (#80)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.43",
+      "date": "2026-09-09",
+      "bump": "patch",
+      "previous_version": "0.4.42",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.42 (#78)",
+      "commits": [
+        {
+          "sha": "90e06ea",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.42 (#78)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.42",
+      "date": "2026-09-08",
+      "bump": "patch",
+      "previous_version": "0.4.41",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.41 (#77)",
+      "commits": [
+        {
+          "sha": "4da5192",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.41 (#77)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.41",
+      "date": "2026-09-08",
+      "bump": "patch",
+      "previous_version": "0.4.40",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.40 (#76)",
+      "commits": [
+        {
+          "sha": "bf672ef",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.40 (#76)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.40",
+      "date": "2026-09-08",
+      "bump": "patch",
+      "previous_version": "0.4.39",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.39 (#75)",
+      "commits": [
+        {
+          "sha": "297c4fe",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.39 (#75)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.39",
+      "date": "2026-09-08",
+      "bump": "patch",
+      "previous_version": "0.4.38",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.38 (#74)",
+      "commits": [
+        {
+          "sha": "62bcb69",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.38 (#74)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.38",
+      "date": "2026-09-08",
+      "bump": "patch",
+      "previous_version": "0.4.37",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.37 (#73)",
+      "commits": [
+        {
+          "sha": "c2d43f9",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.37 (#73)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.37",
+      "date": "2026-09-08",
+      "bump": "patch",
+      "previous_version": "0.4.36",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.36 (#72)",
+      "commits": [
+        {
+          "sha": "0d09488",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.36 (#72)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.36",
+      "date": "2026-09-07",
+      "bump": "patch",
+      "previous_version": "0.4.35",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.35 (#71)",
+      "commits": [
+        {
+          "sha": "9b7145e",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.35 (#71)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.35",
+      "date": "2026-09-07",
+      "bump": "patch",
+      "previous_version": "0.4.34",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.34 (#70)",
+      "commits": [
+        {
+          "sha": "a372519",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.34 (#70)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.34",
+      "date": "2026-09-06",
+      "bump": "patch",
+      "previous_version": "0.4.33",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.33 (#69)",
+      "commits": [
+        {
+          "sha": "771e1c9",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.33 (#69)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.33",
+      "date": "2026-09-06",
+      "bump": "patch",
+      "previous_version": "0.4.32",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.32 (#68)",
+      "commits": [
+        {
+          "sha": "5e025a5",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.32 (#68)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.32",
+      "date": "2026-09-06",
+      "bump": "patch",
+      "previous_version": "0.4.31",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.31 (#67)",
+      "commits": [
+        {
+          "sha": "d7d6685",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.31 (#67)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.31",
+      "date": "2026-09-05",
+      "bump": "patch",
+      "previous_version": "0.4.30",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.30 (#66)",
+      "commits": [
+        {
+          "sha": "cc96395",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.30 (#66)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.30",
+      "date": "2026-09-05",
+      "bump": "patch",
+      "previous_version": "0.4.29",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.29 (#65)",
+      "commits": [
+        {
+          "sha": "6db937a",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.29 (#65)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.29",
+      "date": "2026-09-05",
+      "bump": "patch",
+      "previous_version": "0.4.28",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.28 (#64)",
+      "commits": [
+        {
+          "sha": "c16f415",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.28 (#64)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.28",
+      "date": "2026-09-04",
+      "bump": "patch",
+      "previous_version": "0.4.27",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.27 (#63)",
+      "commits": [
+        {
+          "sha": "f644e21",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.27 (#63)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.27",
+      "date": "2026-09-04",
+      "bump": "patch",
+      "previous_version": "0.4.26",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.26 (#62)",
+      "commits": [
+        {
+          "sha": "2e9065b",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.26 (#62)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.26",
+      "date": "2026-09-04",
+      "bump": "patch",
+      "previous_version": "0.4.25",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.25 (#61)",
+      "commits": [
+        {
+          "sha": "cfd9ab9",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.25 (#61)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.25",
+      "date": "2026-09-03",
+      "bump": "patch",
+      "previous_version": "0.4.24",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.24 (#60)",
+      "commits": [
+        {
+          "sha": "4212238",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.24 (#60)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.24",
+      "date": "2026-09-03",
+      "bump": "patch",
+      "previous_version": "0.4.23",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.23 (#57)",
+      "commits": [
+        {
+          "sha": "7fdc142",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.23 (#57)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.23",
+      "date": "2026-09-02",
+      "bump": "patch",
+      "previous_version": "0.4.22",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.22 (#56)",
+      "commits": [
+        {
+          "sha": "9865720",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.22 (#56)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.22",
+      "date": "2026-09-02",
+      "bump": "patch",
+      "previous_version": "0.4.21",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.21 (#54)",
+      "commits": [
+        {
+          "sha": "216ecd5",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.21 (#54)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.21",
+      "date": "2026-09-01",
+      "bump": "patch",
+      "previous_version": "0.4.20",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.20 (#53)",
+      "commits": [
+        {
+          "sha": "2cf4c83",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.20 (#53)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.20",
+      "date": "2026-09-01",
+      "bump": "patch",
+      "previous_version": "0.4.19",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.19 (#52)",
+      "commits": [
+        {
+          "sha": "8e5bc93",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.19 (#52)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.19",
+      "date": "2026-08-31",
+      "bump": "patch",
+      "previous_version": "0.4.18",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.18 (#50)",
+      "commits": [
+        {
+          "sha": "5bd1666",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.18 (#50)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.18",
+      "date": "2026-08-31",
+      "bump": "patch",
+      "previous_version": "0.4.17",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.17 (#49)",
+      "commits": [
+        {
+          "sha": "e862f1b",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.17 (#49)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.17",
+      "date": "2026-08-30",
+      "bump": "patch",
+      "previous_version": "0.4.16",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.16 (#48)",
+      "commits": [
+        {
+          "sha": "f5ff20e",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.16 (#48)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.16",
+      "date": "2026-08-30",
+      "bump": "patch",
+      "previous_version": "0.4.15",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.15 (#47)",
+      "commits": [
+        {
+          "sha": "4f62aa8",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.15 (#47)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.15",
+      "date": "2026-08-30",
+      "bump": "patch",
+      "previous_version": "0.4.14",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.14 (#46)",
+      "commits": [
+        {
+          "sha": "73cd6aa",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.14 (#46)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.14",
+      "date": "2026-08-29",
+      "bump": "patch",
+      "previous_version": "0.4.13",
+      "summary": "### Other changes\n- Update mailmatrixai image to v0.4.13 (#45)",
+      "commits": [
+        {
+          "sha": "f248e90",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.13 (#45)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.13",
+      "date": "2026-08-29",
+      "bump": "patch",
+      "previous_version": "0.4.12",
+      "summary": "### Other changes\n- Update MailMatrixAI image to v0.4.12 (#44)",
+      "commits": [
+        {
+          "sha": "187c796",
+          "subject": "Update MailMatrixAI image to v0.4.12 (#44)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.12",
+      "date": "2026-08-29",
+      "bump": "patch",
+      "previous_version": "0.4.11",
+      "summary": "### Other changes\n- Update MailMatrixAI image to v0.4.11 (#43)",
+      "commits": [
+        {
+          "sha": "60bdf3a",
+          "subject": "Update MailMatrixAI image to v0.4.11 (#43)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.11",
+      "date": "2026-08-28",
+      "bump": "patch",
+      "previous_version": "0.4.10",
+      "summary": "### Other changes\n- Update MailMatrixAI image to v0.4.10 (#42)",
+      "commits": [
+        {
+          "sha": "f035a4b",
+          "subject": "Update MailMatrixAI image to v0.4.10 (#42)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.10",
+      "date": "2026-08-28",
+      "bump": "patch",
+      "previous_version": "0.4.9",
+      "summary": "### Other changes\n- Update MailMatrixAI image to v0.4.9 (#41)",
+      "commits": [
+        {
+          "sha": "1826ac2",
+          "subject": "Update MailMatrixAI image to v0.4.9 (#41)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.9",
+      "date": "2026-08-27",
+      "bump": "patch",
+      "previous_version": "0.4.8",
+      "summary": "### Other changes\n- Update MailMatrixAI image to v0.4.8 (#40)",
+      "commits": [
+        {
+          "sha": "0e26e74",
+          "subject": "Update MailMatrixAI image to v0.4.8 (#40)"
+        }
+      ]
+    },
+    {
+      "version": "0.4.8",
+      "date": "2026-08-27",
+      "bump": "patch",
+      "previous_version": "0.4.7",
+      "summary": "### Other changes\n- Update dependency electron to v44",
+      "commits": [
+        {
+          "sha": "7ee4244",
+          "subject": "Update dependency electron to v44"
+        }
+      ]
+    },
+    {
+      "version": "0.4.7",
+      "date": "2026-08-27",
+      "bump": "patch",
+      "previous_version": "0.4.6",
+      "summary": "### Other changes\n- Auto-merge Renovate image bumps; keep the semver pin",
+      "commits": [
+        {
+          "sha": "ccfc355",
+          "subject": "Auto-merge Renovate image bumps; keep the semver pin"
+        }
+      ]
+    },
+    {
+      "version": "0.4.6",
+      "date": "2026-08-27",
+      "bump": "patch",
+      "previous_version": "0.4.5",
+      "summary": "### Other changes\n- Update docker/metadata-action action to v6",
+      "commits": [
+        {
+          "sha": "c87bfe3",
+          "subject": "Update docker/metadata-action action to v6"
+        }
+      ]
+    },
+    {
+      "version": "0.4.5",
+      "date": "2026-08-27",
+      "bump": "patch",
+      "previous_version": "0.4.4",
+      "summary": "### Other changes\n- Update docker/login-action action to v4",
+      "commits": [
+        {
+          "sha": "5becddd",
+          "subject": "Update docker/login-action action to v4"
+        }
+      ]
+    },
+    {
+      "version": "0.4.4",
+      "date": "2026-08-27",
+      "bump": "patch",
+      "previous_version": "0.4.3",
+      "summary": "### Other changes\n- Update docker/build-push-action action to v7",
+      "commits": [
+        {
+          "sha": "3502c24",
+          "subject": "Update docker/build-push-action action to v7"
+        }
+      ]
+    },
+    {
+      "version": "0.4.3",
+      "date": "2026-08-26",
+      "bump": "patch",
+      "previous_version": "0.4.2",
+      "summary": "### Features\n- Add resort: reconcile filed mail against emailRules.json",
+      "commits": [
+        {
+          "sha": "a49d356",
+          "subject": "Add resort: reconcile filed mail against emailRules.json"
+        }
+      ]
+    },
+    {
+      "version": "0.4.2",
+      "date": "2026-08-16",
+      "bump": "patch",
+      "previous_version": "0.4.1",
+      "summary": "### Other changes\n- Push version tags with a PAT so semver images build",
+      "commits": [
+        {
+          "sha": "1056e94",
+          "subject": "Push version tags with a PAT so semver images build"
+        }
+      ]
+    },
+    {
+      "version": "0.4.1",
+      "date": "2026-08-15",
+      "bump": "patch",
+      "previous_version": "0.4.0",
+      "summary": "### Features\n- Add Summaries page refresh controls\n\n### Fixes\n- Fix Mail reading pane iframe not filling the window height\n\n### Other changes\n- Automate version bump on merge to main\n- Changed TODO.md — add Summaries page refresh-controls plan\n- Update actions/checkout action to v7\n- Update MailMatrixAI image to v0.4.0\n- Bump deployment image pin to 0.4.0\n- Update python Docker tag to v3.14\n- Update dependency electron to v39.8.10 [SECURITY]\n- Changed TODO.md — expand each roadmap item into a detailed implementation plan",
+      "commits": [
+        {
+          "sha": "caade21",
+          "subject": "Automate version bump on merge to main"
+        },
+        {
+          "sha": "f081a84",
+          "subject": "Add Summaries page refresh controls"
+        },
+        {
+          "sha": "6e69e84",
+          "subject": "Changed TODO.md — add Summaries page refresh-controls plan"
+        },
+        {
+          "sha": "f879dc7",
+          "subject": "Update actions/checkout action to v7"
+        },
+        {
+          "sha": "1704aeb",
+          "subject": "Update MailMatrixAI image to v0.4.0"
+        },
+        {
+          "sha": "1aec46a",
+          "subject": "Bump deployment image pin to 0.4.0"
+        },
+        {
+          "sha": "57d1f78",
+          "subject": "Update python Docker tag to v3.14"
+        },
+        {
+          "sha": "0864b37",
+          "subject": "Update dependency electron to v39.8.10 [SECURITY]"
+        },
+        {
+          "sha": "d282e34",
+          "subject": "Changed TODO.md — expand each roadmap item into a detailed implementation plan"
+        },
+        {
+          "sha": "2aa6973",
+          "subject": "Fix Mail reading pane iframe not filling the window height"
+        }
+      ]
+    },
+    {
+      "version": "0.4.0",
+      "date": "2026-08-14",
+      "bump": "minor",
+      "previous_version": "0.3.0",
+      "summary": "### Features\n- Add rules file import with dedupe merge\n\n### Fixes\n- Fix data-dir rules path (#13) and new-label filing (#14)\n- Stop tracking .coverage\n\n### Other changes\n- Bump to 0.4.0; pin container image to a semver tag\n- Fall back to environment variables when keyring is unavailable\n- Bump js-yaml from 4.3.0 to 4.3.1 in /electron\n- Bump fast-uri from 3.1.4 to 3.1.5 in /electron\n- Bump cryptography from 49.0.0 to 50.0.0\n- Bump brace-expansion from 1.1.16 to 1.1.18 in /electron",
+      "commits": [
+        {
+          "sha": "1ec7a1b",
+          "subject": "Bump to 0.4.0; pin container image to a semver tag"
+        },
+        {
+          "sha": "23d513e",
+          "subject": "Fix data-dir rules path (#13) and new-label filing (#14)"
+        },
+        {
+          "sha": "0e281e5",
+          "subject": "Fall back to environment variables when keyring is unavailable"
+        },
+        {
+          "sha": "997879f",
+          "subject": "Add rules file import with dedupe merge"
+        },
+        {
+          "sha": "6d40a9a",
+          "subject": "Stop tracking .coverage"
+        },
+        {
+          "sha": "e60217c",
+          "subject": "Bump js-yaml from 4.3.0 to 4.3.1 in /electron"
+        },
+        {
+          "sha": "52dc792",
+          "subject": "Bump fast-uri from 3.1.4 to 3.1.5 in /electron"
+        },
+        {
+          "sha": "5760d2e",
+          "subject": "Bump cryptography from 49.0.0 to 50.0.0"
+        },
+        {
+          "sha": "df69c46",
+          "subject": "Bump brace-expansion from 1.1.16 to 1.1.18 in /electron"
+        }
+      ]
+    },
+    {
+      "version": "0.3.0",
+      "date": "2026-08-04",
+      "bump": "custom",
+      "previous_version": null,
+      "summary": "### Features\n- Add app container image + Kubernetes deployment\n- Add lightweight local IMAP (Dovecot) container for testing and seed script\n- Add full mail client (read/write/send, drag-drop filing) — 0.3.0\n- Added files: - TODO.md — planning notes (Inbox Recommendations limits/progress bar, Gmail API/OAuth support, other providers, Dashboard date default)\n- Added files: - inboxAnalysis.py — CLI bridge for the MailMatrixAI-Swift app: full/stats-only inbox analysis, accept-filing, and new rules-list/rules-delete/rules-update-sender/rules-convert-domain modes for the Swift Rules screen - tests/test_inbox_analysis.py — coverage for the new inboxAnalysis.py modes\n- Added files: - templates/cleanup.html — UI for domain-collapse and duplicate-address cleanup, with per-card JS actions posting to new API endpoints - templates/inbox.html — Inbox Recommendations page; auto-analyzes all current INBOX messages via /api/inbox-analyze and renders Claude filing suggestions with Accept buttons\n- Added files: - cleanupRules.py — interactive optimizer for emailRules.json; finds domain-collapsible sender rules (including cross-label matches) and duplicate addresses filed under multiple labels; prompts user to confirm each change and saves on exit - tests/test_cleanup.py — 21 tests covering analysis functions, mutations, and interactive handlers with mocked input\n- Added files: - README.md — project overview, setup, usage, and structure\n\n### Other changes\n- Bump electron from 38.8.6 to 39.8.5 in /electron\n- Update TODO.md and bump Electron package version to 0.3.0\n- Per-folder unread counts in the sidebar\n- Auto-select INBOX on load; open summary previews in-app (Electron)\n- Code review fixes, drop Swift-app bridge, add Electron packaging (0.2.0)\n- Changed files: - pyproject.toml — bump version to 0.1.2 - commonFunctions.py, emailSummary.py — email summary reports now write a JSON stats sidecar (processed/need attention/unfiled counts + generated-at timestamp) alongside each HTML report; report stat-bar relabeled to match (Processed/Need Attention/Unfiled/Filed); summary_files() and dashboard_stats() surface these stats per report - templates/summaries.html, templates/dashboard.html — show processed/need-attention/unfiled counts and the run timestamp on both the Summaries list page and the Dashboard's per-day rows - app.py, templates/dashboard.html, static/style.css — add a Dashboard cleanup widget that only appears when there are rule optimizations to review, linking to the Cleanup screen - commonFunctions.py — build_rule_groups() now sorts domain groups by sender count (most senders first) instead of alphabetically - templates/rules.html, static/style.css — domain groups on the Rules screen are now collapsible; converting a domain rule now also detects individual sender rules for that domain under other labels and offers to delete them (avoids mail being filed to both) - commonFunctions.py — extract_body_snippet() now strips <style>/<script> block content (including truncated/unclosed blocks from byte-range-limited IMAP fetches), fixing raw CSS leaking into inbox preview text - static/style.css, templates/dashboard.html — Dashboard layout: Activity widget moved below the Email Summaries widget, which now spans the full page width as a responsive grid of day cells instead of a narrow stacked list - tests/test_app.py, tests/test_common.py, tests/test_summary.py — coverage for all of the above - TODO.md — planning notes\n- Changed files: - pyproject.toml — bump version to 0.1.1 - app.py, templates/inbox.html, static/style.css — Inbox Recommendations: batch Claude calls (50 senders at a time) instead of one call over the whole inbox, run analysis as a cancellable background job with real fetch/analyze progress reporting - commonFunctions.py, templates/dashboard.html — Dashboard \"Other date\" input now defaults to one day before the oldest date in the 7-day summary grid - templates/rules.html, static/style.css — Rules screen now ships grouped rule data as compact JSON and renders it in scroll-loaded batches instead of the full ~3,500-row table upfront, cutting page payload from ~4.9MB to ~0.8MB; search/facet filtering and rule mutations now operate against that JSON model instead of the DOM - commonFunctions.py, app.py, templates/rules.html — converting a domain rule now detects individual sender rules for that domain under other labels and prompts to delete them too, avoiding mail being filed to both - tests/test_app.py, tests/test_common.py — coverage for all of the above - TODO.md — mark completed items\n- Changed files: - commonFunctions.py — add dashboard_stats()/summary_files() (Dashboard screen), collapse_domain_rule()/resolve_duplicate_address() (Cleanup screen); consolidate get_credential()/set_credential() into a single Keychain item (one JSON blob) instead of 5 separate items, with automatic migration from the old per-key items - app.py — use the new commonFunctions helpers for dashboard/summaries/cleanup routes instead of inline duplicated logic; update .env-to-Keychain migration for the single-item credential scheme - inboxAnalysis.py — add dashboard-stats, summaries-list, and cleanup-scan/collapse-domain/resolve-duplicate modes for the Swift app's Dashboard, Summaries, and Cleanup screens - emailSummary.py — raise analyze_with_claude()'s max_tokens from 4096 to 64000 so large inboxes don't silently truncate the AI response before any JSON is emitted; surface a real error instead of failing silently - tests/conftest.py — add an autouse in-memory fake Keychain fixture so no test can reach the real macOS Keychain (previously only get_password was mocked, leaving set_password/delete_password live) - tests/test_app.py, tests/test_common.py, tests/test_inbox_analysis.py — add coverage for the above; remove now-redundant local Keychain mocks superseded by the conftest fixture\n- Update `uv.lock` for Python 3.10+ and adjust dependency constraints.\n- Changed files: - emailSummary.py — add X-Requested-With header to Accept button fetch in generated summary HTML\n- Changed files: - templates/config.html — add X-Requested-With header to saveConfig fetch (CSRF fix); update subtitle to reflect Keychain storage - tests/test_app.py — add test verifying /api/config returns 403 without CSRF header\n- Changed files: - pyproject.toml — bump requires-python to >=3.10 (python-dotenv>=1.2.2 dropped 3.9 support)\n- Changed files: - commonFunctions.py — add get_credential/set_credential helpers backed by macOS Keychain (keyring); add KEYCHAIN_SERVICE constant; fall back to os.environ for backwards compatibility and tests - app.py — switch all credential reads to get_credential(); switch /api/config writes to set_credential(); add _migrate_env_to_keychain() that auto-copies .env values to Keychain on first run; remove set_key import - emailSummary.py — remove load_dotenv(); switch IMAP and Anthropic credentials to get_credential(); pass api_key explicitly to anthropic.Anthropic() - emailRulesInit.py — remove load_dotenv(); switch IMAP credentials to get_credential(); add missing credentials check with clear error - sortEmail.py — remove load_dotenv(); switch IMAP credentials to get_credential(); add missing credentials check - cleanupRules.py — remove load_dotenv() (no credentials needed; RULES_PATH remains an env override) - pyproject.toml — add keyring>=25.0 dependency - tests/test_app.py — mock keyring.get_password to return None in client fixture so tests continue using os.environ\n- Changed files: - pyproject.toml — bump python-dotenv to >=1.2.2 (symlink-following CVE), pytest to >=9.0.3 (tmpdir CVE); add setuptools py-modules declaration for flat-layout compatibility\n- Changed files: - app.py — CSRF before_request hook; shared rules_lock from commonFunctions; validate_email_address/validate_label on /accept and rules update routes; inbox count via SELECT response; path traversal guard on /summaries/<filename>; /inbox page and /api/inbox-analyze endpoint; M8 domain rule existence check before collapse - commonFunctions.py — export rules_lock (shared threading.Lock); validate_email_address and validate_label helpers; _LIST_RE regex for robust get_all_labels parsing; skip non-bytes folder entries - emailRulesInit.py — anchor output path to script dir; parse_headers instead of email module; lambda capture fix in fetch loop; deduplicate global address count; require output_file arg - emailSummary.py — use shared rules_lock; validate from_addr and label in accept_filing; bind local HTTP server to 127.0.0.1; anchor output dir to script dir - cleanupRules.py — move load_dotenv and path resolution into main(); anchor rules path to script dir - static/app.js — implement shared esc, escAttr, showToast, handleAccept (was empty stub); handleAccept sends X-Requested-With header - templates/dashboard.html — add X-Requested-With header to sort and generate-summary fetches; escape error text before innerHTML injection - templates/rules.html — add X-Requested-With header to all fetch calls; remove duplicate showToast; build domain rule row via imperative DOM to prevent XSS - templates/cleanup.html — rename collapseDomaim → collapseDomain; move domain/address values to data-* attributes; add X-Requested-With headers; remove duplicate showToast - templates/inbox.html — remove duplicate esc, escAttr, handleAccept (now in app.js); add X-Requested-With header to inbox-analyze fetch - tests/test_app.py — add X-Requested-With to client fixture; fix inbox_count assertion to match SELECT-based count; replace year-hardcoded date assertion with regex; remove dead no-op patch.object block; add import re - pyproject.toml — add httpx to dev dependencies\n- Changed files: - tests/test_summary.py — add three tests for main() sort-before-summary behaviour: sort runs before IMAP connects, subprocess receives the correct sortEmail.py path, and a failed sort does not prevent report generation\n- Changed files: - emailSummary.py — run sortEmail.py as a subprocess before fetching summary data so the report reflects the post-filing state; logs a warning and continues if sort fails\n- Changed files: - emailSummary.py — replace static label chip with dropdown in summary suggestions; all available labels shown with recommended one pre-selected; new labels prepended to option list; Accept reads label from select at click time - tests/test_summary.py — add tests for dropdown rendering and new-label-first ordering\n- Changed files: - README.md — generalize from Gmail-only to any IMAP provider; add common server reference table\n- Initial commit",
+      "commits": [
+        {
+          "sha": "cbac933",
+          "subject": "Add app container image + Kubernetes deployment"
+        },
+        {
+          "sha": "ee2093b",
+          "subject": "Bump electron from 38.8.6 to 39.8.5 in /electron"
+        },
+        {
+          "sha": "eee3652",
+          "subject": "Add lightweight local IMAP (Dovecot) container for testing and seed script"
+        },
+        {
+          "sha": "af99f8a",
+          "subject": "Update TODO.md and bump Electron package version to 0.3.0"
+        },
+        {
+          "sha": "b52433d",
+          "subject": "Mail: per-folder unread counts in the sidebar"
+        },
+        {
+          "sha": "53bedc3",
+          "subject": "Mail: auto-select INBOX on load; open summary previews in-app (Electron)"
+        },
+        {
+          "sha": "6fbe680",
+          "subject": "Add full mail client (read/write/send, drag-drop filing) — 0.3.0"
+        },
+        {
+          "sha": "edf4215",
+          "subject": "Code review fixes, drop Swift-app bridge, add Electron packaging (0.2.0)"
+        },
+        {
+          "sha": "fd8752e",
+          "subject": "Changed files: - pyproject.toml — bump version to 0.1.2 - commonFunctions.py, emailSummary.py — email summary reports now write a JSON stats sidecar (processed/need attention/unfiled counts + generated-at timestamp) alongside each HTML report; report stat-bar relabeled to match (Processed/Need Attention/Unfiled/Filed); summary_files() and dashboard_stats() surface these stats per report - templates/summaries.html, templates/dashboard.html — show processed/need-attention/unfiled counts and the run timestamp on both the Summaries list page and the Dashboard's per-day rows - app.py, templates/dashboard.html, static/style.css — add a Dashboard cleanup widget that only appears when there are rule optimizations to review, linking to the Cleanup screen - commonFunctions.py — build_rule_groups() now sorts domain groups by sender count (most senders first) instead of alphabetically - templates/rules.html, static/style.css — domain groups on the Rules screen are now collapsible; converting a domain rule now also detects individual sender rules for that domain under other labels and offers to delete them (avoids mail being filed to both) - commonFunctions.py — extract_body_snippet() now strips <style>/<script> block content (including truncated/unclosed blocks from byte-range-limited IMAP fetches), fixing raw CSS leaking into inbox preview text - static/style.css, templates/dashboard.html — Dashboard layout: Activity widget moved below the Email Summaries widget, which now spans the full page width as a responsive grid of day cells instead of a narrow stacked list - tests/test_app.py, tests/test_common.py, tests/test_summary.py — coverage for all of the above - TODO.md — planning notes"
+        },
+        {
+          "sha": "c2dfe3d",
+          "subject": "Changed files: - pyproject.toml — bump version to 0.1.1 - app.py, templates/inbox.html, static/style.css — Inbox Recommendations: batch Claude calls (50 senders at a time) instead of one call over the whole inbox, run analysis as a cancellable background job with real fetch/analyze progress reporting - commonFunctions.py, templates/dashboard.html — Dashboard \"Other date\" input now defaults to one day before the oldest date in the 7-day summary grid - templates/rules.html, static/style.css — Rules screen now ships grouped rule data as compact JSON and renders it in scroll-loaded batches instead of the full ~3,500-row table upfront, cutting page payload from ~4.9MB to ~0.8MB; search/facet filtering and rule mutations now operate against that JSON model instead of the DOM - commonFunctions.py, app.py, templates/rules.html — converting a domain rule now detects individual sender rules for that domain under other labels and prompts to delete them too, avoiding mail being filed to both - tests/test_app.py, tests/test_common.py — coverage for all of the above - TODO.md — mark completed items"
+        },
+        {
+          "sha": "e53bdcd",
+          "subject": "Added files: - TODO.md — planning notes (Inbox Recommendations limits/progress bar, Gmail API/OAuth support, other providers, Dashboard date default)"
+        },
+        {
+          "sha": "7ef9cb4",
+          "subject": "Changed files: - commonFunctions.py — add dashboard_stats()/summary_files() (Dashboard screen), collapse_domain_rule()/resolve_duplicate_address() (Cleanup screen); consolidate get_credential()/set_credential() into a single Keychain item (one JSON blob) instead of 5 separate items, with automatic migration from the old per-key items - app.py — use the new commonFunctions helpers for dashboard/summaries/cleanup routes instead of inline duplicated logic; update .env-to-Keychain migration for the single-item credential scheme - inboxAnalysis.py — add dashboard-stats, summaries-list, and cleanup-scan/collapse-domain/resolve-duplicate modes for the Swift app's Dashboard, Summaries, and Cleanup screens - emailSummary.py — raise analyze_with_claude()'s max_tokens from 4096 to 64000 so large inboxes don't silently truncate the AI response before any JSON is emitted; surface a real error instead of failing silently - tests/conftest.py — add an autouse in-memory fake Keychain fixture so no test can reach the real macOS Keychain (previously only get_password was mocked, leaving set_password/delete_password live) - tests/test_app.py, tests/test_common.py, tests/test_inbox_analysis.py — add coverage for the above; remove now-redundant local Keychain mocks superseded by the conftest fixture"
+        },
+        {
+          "sha": "6b0e302",
+          "subject": "Added files: - inboxAnalysis.py — CLI bridge for the MailMatrixAI-Swift app: full/stats-only inbox analysis, accept-filing, and new rules-list/rules-delete/rules-update-sender/rules-convert-domain modes for the Swift Rules screen - tests/test_inbox_analysis.py — coverage for the new inboxAnalysis.py modes"
+        },
+        {
+          "sha": "5b745d9",
+          "subject": "Update `uv.lock` for Python 3.10+ and adjust dependency constraints."
+        },
+        {
+          "sha": "117fc0c",
+          "subject": "Changed files: - emailSummary.py — add X-Requested-With header to Accept button fetch in generated summary HTML"
+        },
+        {
+          "sha": "279c774",
+          "subject": "Changed files: - templates/config.html — add X-Requested-With header to saveConfig fetch (CSRF fix); update subtitle to reflect Keychain storage - tests/test_app.py — add test verifying /api/config returns 403 without CSRF header"
+        },
+        {
+          "sha": "28b550b",
+          "subject": "Changed files: - pyproject.toml — bump requires-python to >=3.10 (python-dotenv>=1.2.2 dropped 3.9 support)"
+        },
+        {
+          "sha": "d5f1194",
+          "subject": "Changed files: - commonFunctions.py — add get_credential/set_credential helpers backed by macOS Keychain (keyring); add KEYCHAIN_SERVICE constant; fall back to os.environ for backwards compatibility and tests - app.py — switch all credential reads to get_credential(); switch /api/config writes to set_credential(); add _migrate_env_to_keychain() that auto-copies .env values to Keychain on first run; remove set_key import - emailSummary.py — remove load_dotenv(); switch IMAP and Anthropic credentials to get_credential(); pass api_key explicitly to anthropic.Anthropic() - emailRulesInit.py — remove load_dotenv(); switch IMAP credentials to get_credential(); add missing credentials check with clear error - sortEmail.py — remove load_dotenv(); switch IMAP credentials to get_credential(); add missing credentials check - cleanupRules.py — remove load_dotenv() (no credentials needed; RULES_PATH remains an env override) - pyproject.toml — add keyring>=25.0 dependency - tests/test_app.py — mock keyring.get_password to return None in client fixture so tests continue using os.environ"
+        },
+        {
+          "sha": "c819514",
+          "subject": "Changed files: - pyproject.toml — bump python-dotenv to >=1.2.2 (symlink-following CVE), pytest to >=9.0.3 (tmpdir CVE); add setuptools py-modules declaration for flat-layout compatibility"
+        },
+        {
+          "sha": "4163189",
+          "subject": "Changed files: - app.py — CSRF before_request hook; shared rules_lock from commonFunctions; validate_email_address/validate_label on /accept and rules update routes; inbox count via SELECT response; path traversal guard on /summaries/<filename>; /inbox page and /api/inbox-analyze endpoint; M8 domain rule existence check before collapse - commonFunctions.py — export rules_lock (shared threading.Lock); validate_email_address and validate_label helpers; _LIST_RE regex for robust get_all_labels parsing; skip non-bytes folder entries - emailRulesInit.py — anchor output path to script dir; parse_headers instead of email module; lambda capture fix in fetch loop; deduplicate global address count; require output_file arg - emailSummary.py — use shared rules_lock; validate from_addr and label in accept_filing; bind local HTTP server to 127.0.0.1; anchor output dir to script dir - cleanupRules.py — move load_dotenv and path resolution into main(); anchor rules path to script dir - static/app.js — implement shared esc, escAttr, showToast, handleAccept (was empty stub); handleAccept sends X-Requested-With header - templates/dashboard.html — add X-Requested-With header to sort and generate-summary fetches; escape error text before innerHTML injection - templates/rules.html — add X-Requested-With header to all fetch calls; remove duplicate showToast; build domain rule row via imperative DOM to prevent XSS - templates/cleanup.html — rename collapseDomaim → collapseDomain; move domain/address values to data-* attributes; add X-Requested-With headers; remove duplicate showToast - templates/inbox.html — remove duplicate esc, escAttr, handleAccept (now in app.js); add X-Requested-With header to inbox-analyze fetch - tests/test_app.py — add X-Requested-With to client fixture; fix inbox_count assertion to match SELECT-based count; replace year-hardcoded date assertion with regex; remove dead no-op patch.object block; add import re - pyproject.toml — add httpx to dev dependencies"
+        },
+        {
+          "sha": "605212a",
+          "subject": "Added files: - templates/cleanup.html — UI for domain-collapse and duplicate-address cleanup, with per-card JS actions posting to new API endpoints - templates/inbox.html — Inbox Recommendations page; auto-analyzes all current INBOX messages via /api/inbox-analyze and renders Claude filing suggestions with Accept buttons"
+        },
+        {
+          "sha": "1ddc050",
+          "subject": "Added files: - cleanupRules.py — interactive optimizer for emailRules.json; finds domain-collapsible sender rules (including cross-label matches) and duplicate addresses filed under multiple labels; prompts user to confirm each change and saves on exit - tests/test_cleanup.py — 21 tests covering analysis functions, mutations, and interactive handlers with mocked input"
+        },
+        {
+          "sha": "85d455b",
+          "subject": "Changed files: - tests/test_summary.py — add three tests for main() sort-before-summary behaviour: sort runs before IMAP connects, subprocess receives the correct sortEmail.py path, and a failed sort does not prevent report generation"
+        },
+        {
+          "sha": "40d7583",
+          "subject": "Changed files: - emailSummary.py — run sortEmail.py as a subprocess before fetching summary data so the report reflects the post-filing state; logs a warning and continues if sort fails"
+        },
+        {
+          "sha": "0b4bcc4",
+          "subject": "Changed files: - emailSummary.py — replace static label chip with dropdown in summary suggestions; all available labels shown with recommended one pre-selected; new labels prepended to option list; Accept reads label from select at click time - tests/test_summary.py — add tests for dropdown rendering and new-label-first ordering"
+        },
+        {
+          "sha": "06ebdd8",
+          "subject": "Changed files: - README.md — generalize from Gmail-only to any IMAP provider; add common server reference table"
+        },
+        {
+          "sha": "c22d38e",
+          "subject": "Added files: - README.md — project overview, setup, usage, and structure"
+        },
+        {
+          "sha": "0e9b016",
+          "subject": "Initial commit"
+        }
+      ]
+    }
+  ]
+}
