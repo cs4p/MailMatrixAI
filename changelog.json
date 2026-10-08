@@ -3,6 +3,27 @@
   "project": "MailMatrixAI",
   "releases": [
     {
+      "version": "0.5.0",
+      "date": "2026-10-08",
+      "bump": "minor",
+      "previous_version": "0.4.110",
+      "summary": "### Features\n- Add a changelog screen and show the app version in the header\n\n### Other changes\n- Update mailmatrixai image to v0.4.110 (#154)\n- Update mailmatrixai image to v0.4.108",
+      "commits": [
+        {
+          "sha": "b4830c0",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.110 (#154)"
+        },
+        {
+          "sha": "54e107c",
+          "subject": "Add a changelog screen and show the app version in the header"
+        },
+        {
+          "sha": "da71f8a",
+          "subject": "chore(deps): update mailmatrixai image to v0.4.108"
+        }
+      ]
+    },
+    {
       "version": "0.4.110",
       "date": "2026-10-04",
       "bump": "patch",
