@@ -61,7 +61,12 @@ build that is only reachable as `latest` or `sha-…`. Automated update tools
 - **Never remove the `k8s/**` `paths-ignore` from `version-bump.yml` /
   `docker-publish.yml`.** Without it, each auto-merged pin bump cuts a new
   release, which Renovate pins again — an endless release loop.
-- Version-bump commits touch `pyproject.toml` and `electron/package.json` only.
+- Version-bump commits touch `pyproject.toml`, `electron/package.json` and
+  `changelog.json` only (the last via `scripts/changelog.py add`, which drafts
+  the entry from commit subjects — write PR/commit titles as release notes).
+  The app reads its version from `pyproject.toml` (header badge) and serves
+  `changelog.json` at `/changelog`; both are COPYed into the image.
+  `scripts/changelog.py backfill` rebuilds the file from all `vX.Y.Z` tags.
   The pin advances **after** CI publishes the image (via the Renovate PR) —
   bumping it in the same commit would point at a tag that does not exist yet.
 - **The live lab deployment is not `k8s/` here.** Argo CD deploys it from

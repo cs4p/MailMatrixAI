@@ -9,7 +9,10 @@
 <body>
   <nav class="nav">
     <div class="nav-inner">
-      <a class="nav-logo" href="/">MailMatrix<span class="nav-logo-ai">AI</span></a>
+      <div class="nav-brand">
+        <a class="nav-logo" href="/">MailMatrix<span class="nav-logo-ai">AI</span></a>
+        {% if app_version %}<a class="nav-version{{ ' active' if request.path == '/changelog' }}" href="/changelog" title="Changelog">v{{ app_version }}</a>{% endif %}
+      </div>
       <div class="nav-links">
         <a href="/" class="{{ 'active' if request.path == '/' }}">Dashboard</a>
         <a href="/mail" class="{{ 'active' if request.path == '/mail' }}">Mail</a>

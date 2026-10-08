@@ -1,7 +1,8 @@
 name: Bump version on merge to main
 
 # On every push to main (a merged PR or a direct commit), bump the project
-# version in pyproject.toml + electron/package.json and push a matching
+# version in pyproject.toml + electron/package.json, prepend a changelog.json
+# entry, and push a matching
 # vX.Y.Z tag. Level:
 #   - patch by default
 #   - "#minor" in the head commit message  -> minor bump
@@ -96,13 +97,22 @@ jobs:
           echo "pyproject.toml -> $(grep -m1 -E '^version = ' pyproject.toml)"
           echo "package.json  -> $(grep -m1 -E '\"version\":' electron/package.json)"
 
+      - name: Add changelog entry
+        env:
+          CURRENT: ${{ steps.ver.outputs.current }}
+          NEW: ${{ steps.ver.outputs.new }}
+          LEVEL: ${{ steps.level.outputs.level }}
+        # Drafts the entry from the commit subjects in v$CURRENT..HEAD; the app
+        # serves changelog.json at /changelog.
+        run: python3 scripts/changelog.py add --version "$NEW" --previous "$CURRENT" --bump "$LEVEL"
+
       - name: Commit, tag, and push
         env:
           NEW: ${{ steps.ver.outputs.new }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add pyproject.toml electron/package.json
+          git add pyproject.toml electron/package.json changelog.json
           git commit -m "chore: bump version to $NEW [skip version]"
           git tag "v$NEW"
           git push origin HEAD:main

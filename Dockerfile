@@ -28,7 +28,8 @@ RUN pip install --no-cache-dir \
 
 # Application code (only what the server needs at runtime; see .dockerignore).
 COPY app.py commonFunctions.py emailSummary.py sortEmail.py resortEmail.py \
-     cleanupRules.py emailRulesInit.py emailRules.schema.json ./
+     cleanupRules.py emailRulesInit.py emailRules.schema.json \
+     pyproject.toml changelog.json ./
 COPY templates/ templates/
 COPY static/ static/
 

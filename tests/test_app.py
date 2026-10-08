@@ -112,6 +112,79 @@ def test_config_page_returns_200(client):
     assert b"IMAP_SERVER" in resp.data
 
 
+# ── version badge / changelog ─────────────────────────────────────────────────
+
+def _write_changelog(tmp_path, releases):
+    path = tmp_path / "changelog.json"
+    path.write_text(json.dumps({"schema_version": 1, "releases": releases}))
+    return path
+
+
+def test_app_version_matches_pyproject():
+    import re
+    pyproject = (flask_app_module.BASE_DIR / "pyproject.toml").read_text()
+    assert flask_app_module.APP_VERSION == re.search(r'^version = "([^"]+)"', pyproject, re.M).group(1)
+
+
+def test_header_shows_version_linking_to_changelog(client):
+    with patch.object(flask_app_module, "APP_VERSION", "1.2.3"):
+        html = client.get("/").data.decode()
+    assert 'href="/changelog"' in html
+    assert "v1.2.3" in html
+
+
+def test_header_omits_version_badge_when_unknown(client):
+    with patch.object(flask_app_module, "APP_VERSION", ""):
+        html = client.get("/").data.decode()
+    assert 'class="nav-version' not in html
+
+
+def test_changelog_page_renders_releases(client, tmp_path):
+    path = _write_changelog(tmp_path, [
+        {"version": "1.2.3", "date": "2026-10-04", "bump": "minor",
+         "summary": "### Features\n- Added **ui:** a thing\n\n### Fixes\n- Fixed a bug"},
+        {"version": "1.2.2", "date": "2026-10-01", "bump": "patch", "summary": "- No notable changes."},
+    ])
+    with patch.object(flask_app_module, "CHANGELOG_PATH", path), \
+         patch.object(flask_app_module, "APP_VERSION", "1.2.3"):
+        resp = client.get("/changelog")
+    html = resp.data.decode()
+    assert resp.status_code == 200
+    assert html.index("v1.2.3</h2>") < html.index("v1.2.2</h2>")
+    assert "<h3>Features</h3>" in html and "<li>Added ui: a thing</li>" in html
+    assert "<li>Fixed a bug</li>" in html
+    assert "<li>No notable changes.</li>" in html
+    assert "changelog-current" in html
+
+
+def test_changelog_page_escapes_summary_text(client, tmp_path):
+    path = _write_changelog(tmp_path, [
+        {"version": "1.0.0", "summary": "- <script>alert(1)</script>"},
+    ])
+    with patch.object(flask_app_module, "CHANGELOG_PATH", path):
+        html = client.get("/changelog").data.decode()
+    assert "<script>alert(1)</script>" not in html
+    assert "&lt;script&gt;" in html
+
+
+@pytest.mark.parametrize("content", [None, "not json", '{"releases": "nope"}', "[1, 2]"])
+def test_changelog_page_handles_missing_or_bad_file(client, tmp_path, content):
+    path = tmp_path / "changelog.json"
+    if content is not None:
+        path.write_text(content)
+    with patch.object(flask_app_module, "CHANGELOG_PATH", path):
+        resp = client.get("/changelog")
+    assert resp.status_code == 200
+    assert b"No release history available." in resp.data
+
+
+def test_repo_changelog_is_valid_and_newest_first():
+    releases = flask_app_module._load_changelog()
+    assert releases, "changelog.json missing or empty"
+    versions = [tuple(int(x) for x in r["version"].split(".")) for r in releases]
+    assert versions == sorted(versions, reverse=True)
+
+
 def test_dashboard_links_each_day_to_its_live_summary(client):
     from datetime import date as _date
     html = client.get("/").data.decode()
