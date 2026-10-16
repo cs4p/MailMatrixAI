@@ -925,7 +925,9 @@ def _combined_fetch(headers_for):
         data = []
         for mid in id_set.split(b","):
             headers = headers_for(mid)
-            data.append((mid + b" (BODY[HEADER.FIELDS (FROM SUBJECT DATE)] {%d}" % len(headers), headers))
+            # When UID is requested, answer with UID = 100 + sequence number.
+            uid = b"UID %d " % (100 + int(mid)) if "UID" in what else b""
+            data.append((mid + b" (" + uid + b"BODY[HEADER.FIELDS (FROM SUBJECT DATE)] {%d}" % len(headers), headers))
             if "TEXT" in what:
                 data.append((b" BODY[TEXT]<0> {%d}" % len(_RAW_BODY), _RAW_BODY))
             data.append(b")")
@@ -1027,6 +1029,7 @@ def test_api_inbox_analyze_returns_emails_and_suggestions(client, monkeypatch):
     assert len(result["emails"]) == 1
     assert result["emails"][0]["from_addr"] == "alice@work.com"
     assert result["emails"][0]["subject"] == "Q2 Report"
+    assert result["emails"][0]["uid"] == "101"
     assert result["action_required"] == analysis["action_required"]
     assert result["filing_suggestions"] == analysis["filing_suggestions"]
     assert result["labels"] == ["MailMatrixCategories/Work"]
@@ -1498,6 +1501,16 @@ def test_mail_message_view_and_marks_seen(client):
     # \Seen store was issued
     store_calls = [c for c in imap.uid.call_args_list if c.args[0] == "STORE"]
     assert store_calls and "\\Seen" in store_calls[0].args
+
+
+def test_mail_message_peek_does_not_mark_seen(client):
+    imap = _message_imap(_full_message_bytes())
+    with _mail_env_patch(), patch("app.connect_to_imap", return_value=imap):
+        data = client.get("/api/mail/message?folder=INBOX&uid=5&peek=1").get_json()
+    assert data["ok"] is True
+    assert "Plain text body." in data["body_text"]
+    assert not [c for c in imap.uid.call_args_list if c.args[0] == "STORE"]
+    assert imap.select.call_args.kwargs["readonly"] is True
 
 
 def test_mail_message_not_found(client):

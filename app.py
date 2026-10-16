@@ -708,7 +708,7 @@ def _analyze_inbox(progress_cb=None, cancel_event=None) -> dict:
             try:
                 fetched = fetch_many(
                     imap, chunk,
-                    "(BODY[HEADER.FIELDS (FROM SUBJECT DATE CONTENT-TYPE)] BODY[TEXT]<0.2000>)",
+                    "(UID BODY[HEADER.FIELDS (FROM SUBJECT DATE CONTENT-TYPE)] BODY[TEXT]<0.2000>)",
                 )
             except Exception as exc:
                 log.error("Error fetching INBOX chunk at %d: %s", chunk_start, exc)
@@ -728,6 +728,8 @@ def _analyze_inbox(progress_cb=None, cancel_event=None) -> dict:
                     "subject": headers["subject"] or "(no subject)",
                     "date": headers["date"],
                     "body_snippet": snippet,
+                    # Lets the page lazy-load the full text via /api/mail/message.
+                    "uid": entry["uid"].decode() if entry.get("uid") else "",
                 })
             progress_cb("fetching", min(chunk_start + len(chunk), len(msg_ids)), len(msg_ids))
     finally:
@@ -1204,6 +1206,9 @@ def api_mail_messages():
 def api_mail_message():
     folder = request.args.get("folder", "")
     uid = request.args.get("uid", "")
+    # peek=1 (the AI Inbox's expandable full text) reads without marking the
+    # message as seen.
+    peek = request.args.get("peek") == "1"
     if not validate_folder(folder) or not _UID_RE.match(uid):
         return jsonify({"ok": False, "error": "Invalid folder or uid"}), 400
 
@@ -1211,16 +1216,17 @@ def api_mail_message():
     if err:
         return err
     try:
-        raw = _fetch_full_message(imap, folder, uid, readonly=False)
+        raw = _fetch_full_message(imap, folder, uid, readonly=peek)
         if raw is None:
             return jsonify({"ok": False, "error": "Message not found"}), 404
         parts = extract_message_parts(raw)
         # Opening a message marks it read — standard client behavior. Best
         # effort: a failed STORE shouldn't fail the view.
-        try:
-            _imap_call(lambda: imap.uid("STORE", uid, "+FLAGS", "\\Seen"))
-        except Exception as exc:
-            log.warning("Could not mark %s uid %s as seen: %s", folder, uid, exc)
+        if not peek:
+            try:
+                _imap_call(lambda: imap.uid("STORE", uid, "+FLAGS", "\\Seen"))
+            except Exception as exc:
+                log.warning("Could not mark %s uid %s as seen: %s", folder, uid, exc)
         return jsonify({
             "ok": True,
             "uid": uid,

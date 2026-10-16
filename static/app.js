@@ -85,6 +85,35 @@ function renderActionCards(items) {
     </div>`).join('');
 }
 
+// Fill a sender card's collapsible body the first time it's opened. The
+// text goes in via textContent; HTML-only mail is reduced to its text through
+// an inert DOMParser document (no scripts run, no images load).
+async function loadFullText(details) {
+  if (details.dataset.loaded) return;
+  details.dataset.loaded = '1';
+  const box = details.querySelector('.inbox-fulltext');
+  try {
+    const params = new URLSearchParams({ folder: 'INBOX', uid: details.dataset.uid, peek: '1' });
+    const data = await (await fetch('/api/mail/message?' + params)).json();
+    if (!data.ok) throw new Error(data.error || 'Unknown error');
+    let text = data.body_text || '';
+    if (!text.trim() && data.body_html) {
+      text = new DOMParser().parseFromString(data.body_html, 'text/html').body.textContent || '';
+    }
+    box.textContent = text.trim() || '(no text content)';
+  } catch (err) {
+    delete details.dataset.loaded;  // allow a retry on the next expand
+    box.textContent = 'Could not load message: ' + err.message;
+  }
+}
+
+// toggle doesn't bubble, so listen in the capture phase.
+document.addEventListener('toggle', e => {
+  if (e.target.matches && e.target.matches('details.inbox-email') && e.target.open) {
+    loadFullText(e.target);
+  }
+}, true);
+
 // One unfiled sender: subject/meta/preview plus, when Claude suggested a
 // label, a label picker and an Accept button (handled by handleAccept).
 function renderSenderCard(em, idx, sug, labels) {
@@ -109,8 +138,17 @@ function renderSenderCard(em, idx, sug, labels) {
     </div>`;
   }
 
+  // With a UID (AI Inbox), the subject heads a collapsible full-text body
+  // that loads on first expand (see loadFullText).
+  const subject = em.uid
+    ? `<details class="inbox-email" data-uid="${escAttr(em.uid)}">
+        <summary class="inbox-subject">${esc(em.subject || '(no subject)')} ${count}</summary>
+        <div class="inbox-fulltext">Loading…</div>
+      </details>`
+    : `<div class="inbox-subject">${esc(em.subject || '(no subject)')} ${count}</div>`;
+
   return `<div class="inbox-card" id="inbox-card-${idx}" data-from="${escAttr(em.from_addr)}">
-    <div class="inbox-subject">${esc(em.subject || '(no subject)')} ${count}</div>
+    ${subject}
     <div class="inbox-meta">From: ${esc(em.from_display || em.from_addr)}</div>
     <div class="inbox-meta">Date: ${esc(em.date || '')}</div>
     ${preview}

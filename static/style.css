@@ -1067,6 +1067,24 @@ a:hover { text-decoration: underline; }
   font-weight: 600;
   font-size: .95rem;
 }
+.inbox-email > summary {
+  cursor: pointer;
+}
+.inbox-fulltext {
+  font-size: .85rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 24rem;
+  overflow-y: auto;
+  margin: .6rem 0;
+  padding: .6rem .75rem;
+  background: #f9f9f9;
+  border-radius: 6px;
+}
+/* The full text supersedes the snippet while it's open. */
+.inbox-card:has(.inbox-email[open]) .inbox-preview {
+  display: none;
+}
 .inbox-meta {
   font-size: .8rem;
   color: var(--text-secondary);

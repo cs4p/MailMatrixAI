@@ -693,6 +693,16 @@ def test_fetch_many_combined_header_and_text_sections(mock_imap):
     assert result[b"7"] == {"header": b"From: a@x.com\r\n", "text": b"hello"}
 
 
+def test_fetch_many_captures_uid_in_sequence_mode(mock_imap):
+    mock_imap.fetch.return_value = ("OK", [
+        (b"7 (UID 42 BODY[HEADER.FIELDS (FROM)] {15}", b"From: a@x.com\r\n"),
+        b")",
+    ])
+    result = commonFunctions.fetch_many(mock_imap, [b"7"], "(UID BODY[HEADER.FIELDS (FROM)])")
+    assert result[b"7"]["uid"] == b"42"
+    assert result[b"7"]["header"] == b"From: a@x.com\r\n"
+
+
 def test_fetch_many_skips_noise_and_missing_messages(mock_imap):
     mock_imap.fetch.return_value = ("OK", [
         b"* 3 FLAGS (\\Seen)",  # unsolicited untagged noise
