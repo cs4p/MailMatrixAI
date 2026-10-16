@@ -530,7 +530,8 @@ def fetch_many(imap, msg_ids: List[bytes], parts: str,
 
     With use_uid=True, msg_ids are UIDs, the fetch runs as UID FETCH, results
     are keyed by UID (stable across expunges), and each record gains a "flags"
-    key holding the raw FLAGS bytes when the server included them.
+    key holding the raw FLAGS bytes when the server included them. Without it,
+    a record gains a "uid" key (bytes) when `parts` asked for UID.
     """
     chunk_size = chunk_size or FETCH_CHUNK_SIZE
     results: Dict[bytes, dict] = {}
@@ -569,7 +570,10 @@ def fetch_many(imap, msg_ids: List[bytes], parts: str,
                     if fm:
                         rec["flags"] = fm.group(1)
                 else:
-                    results.setdefault(current, {"header": None, "text": None})
+                    rec = results.setdefault(current, {"header": None, "text": None})
+                    um = _FETCH_UID_RE.search(prefix)
+                    if um:
+                        rec["uid"] = um.group(1)
             if current is None:
                 continue
             if b"HEADER" in prefix:
