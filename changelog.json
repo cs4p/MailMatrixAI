@@ -3,6 +3,31 @@
   "project": "MailMatrixAI",
   "releases": [
     {
+      "version": "0.5.1",
+      "date": "2026-10-16",
+      "bump": "patch",
+      "previous_version": "0.5.0",
+      "summary": "### Features\n- Show the full email text in a collapsible section on the AI Inbox\n\n### Other changes\n- Update dependency electron to v44.7.0 (#159)\n- Update dependency electron to v44.6.0 (#158)\n- Update mailmatrixai image to v0.5.0 (#157)",
+      "commits": [
+        {
+          "sha": "537daa2",
+          "subject": "Show the full email text in a collapsible section on the AI Inbox"
+        },
+        {
+          "sha": "3620a95",
+          "subject": "chore(deps): update dependency electron to v44.7.0 [skip version] (#159)"
+        },
+        {
+          "sha": "25832fa",
+          "subject": "chore(deps): update dependency electron to v44.6.0 [skip version] (#158)"
+        },
+        {
+          "sha": "862700e",
+          "subject": "chore(deps): update mailmatrixai image to v0.5.0 (#157)"
+        }
+      ]
+    },
+    {
       "version": "0.5.0",
       "date": "2026-10-08",
       "bump": "minor",
