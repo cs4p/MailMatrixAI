@@ -3,6 +3,35 @@
   "project": "MailMatrixAI",
   "releases": [
     {
+      "version": "0.5.2",
+      "date": "2026-10-21",
+      "bump": "patch",
+      "previous_version": "0.5.1",
+      "summary": "### Other changes\n- Update python docker tag to v3.15 (#165)\n- Update dependency electron to v44.9.0 (#164)\n- Update dependency electron to v44.8.0 (#163)\n- Update dependency electron to v44.7.2 (#162)\n- Update mailmatrixai image to v0.5.1 (#161)",
+      "commits": [
+        {
+          "sha": "146b39b",
+          "subject": "chore(deps): update python docker tag to v3.15 (#165)"
+        },
+        {
+          "sha": "03c43c7",
+          "subject": "chore(deps): update dependency electron to v44.9.0 [skip version] (#164)"
+        },
+        {
+          "sha": "5b49ef8",
+          "subject": "chore(deps): update dependency electron to v44.8.0 [skip version] (#163)"
+        },
+        {
+          "sha": "c7b37b7",
+          "subject": "chore(deps): update dependency electron to v44.7.2 [skip version] (#162)"
+        },
+        {
+          "sha": "6ca766b",
+          "subject": "chore(deps): update mailmatrixai image to v0.5.1 (#161)"
+        }
+      ]
+    },
+    {
       "version": "0.5.1",
       "date": "2026-10-16",
       "bump": "patch",
