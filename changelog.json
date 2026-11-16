@@ -3,6 +3,19 @@
   "project": "MailMatrixAI",
   "releases": [
     {
+      "version": "0.5.4",
+      "date": "2026-11-16",
+      "bump": "patch",
+      "previous_version": "0.5.3",
+      "summary": "### Other changes\n- Update dependency certifi to v2026.10.18 [security] (#177)",
+      "commits": [
+        {
+          "sha": "38bf44b",
+          "subject": "chore(deps): update dependency certifi to v2026.10.18 [security] (#177)"
+        }
+      ]
+    },
+    {
       "version": "0.5.3",
       "date": "2026-11-16",
       "bump": "patch",
