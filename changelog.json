@@ -3,6 +3,43 @@
   "project": "MailMatrixAI",
   "releases": [
     {
+      "version": "0.5.3",
+      "date": "2026-11-16",
+      "bump": "patch",
+      "previous_version": "0.5.2",
+      "summary": "### Other changes\n- Update dependency werkzeug to v3.1.9 [security] (#176)\n- Update dependency electron to v44.10.0 (#175)\n- Update dependency electron to v44.9.3 (#172)\n- Update dependency electron-builder to v26.18.0 (#171)\n- Update dependency electron to v44.9.2 (#170)\n- Update dependency electron to v44.9.1 (#169)\n- Update mailmatrixai image to v0.5.2 (#167)",
+      "commits": [
+        {
+          "sha": "e5813dc",
+          "subject": "chore(deps): update dependency werkzeug to v3.1.9 [security] (#176)"
+        },
+        {
+          "sha": "19e27b6",
+          "subject": "chore(deps): update dependency electron to v44.10.0 [skip version] (#175)"
+        },
+        {
+          "sha": "f738549",
+          "subject": "chore(deps): update dependency electron to v44.9.3 [skip version] (#172)"
+        },
+        {
+          "sha": "d6aaafe",
+          "subject": "chore(deps): update dependency electron-builder to v26.18.0 [skip version] (#171)"
+        },
+        {
+          "sha": "954d863",
+          "subject": "chore(deps): update dependency electron to v44.9.2 [skip version] (#170)"
+        },
+        {
+          "sha": "4a32ad3",
+          "subject": "chore(deps): update dependency electron to v44.9.1 [skip version] (#169)"
+        },
+        {
+          "sha": "430a223",
+          "subject": "chore(deps): update mailmatrixai image to v0.5.2 (#167)"
+        }
+      ]
+    },
+    {
       "version": "0.5.2",
       "date": "2026-10-21",
       "bump": "patch",
